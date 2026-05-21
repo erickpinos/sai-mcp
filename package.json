@@ -1,0 +1,43 @@
+{
+  "name": "sai-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for the Sai.fun perpetual futures protocol on Nibiru Chain. Exposes the sai-keeper GraphQL API as MCP tools.",
+  "type": "module",
+  "bin": {
+    "sai-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc && chmod +x dist/index.js",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "inspect": "npx @modelcontextprotocol/inspector node dist/index.js",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "sai",
+    "sai.fun",
+    "nibiru",
+    "perpetuals",
+    "defi",
+    "graphql"
+  ],
+  "author": "Erick Pinos <erick@erickpinos.com>",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
