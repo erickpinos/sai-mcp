@@ -33,6 +33,8 @@ import {
   listTokensSchema,
 } from "./tools/oracle.js";
 import { rawQuery, rawQuerySchema } from "./tools/raw.js";
+import { getWalletInfo, getWalletInfoSchema } from "./tools/wallet.js";
+import { openTrade, openTradeSchema } from "./tools/trade.js";
 
 const server = new McpServer({
   name: "sai-mcp",
@@ -169,6 +171,21 @@ register(
   "Run an arbitrary GraphQL query against the sai-keeper endpoint. Escape hatch for queries not covered by the typed tools — leaderboards, referrals, portfolio drill-downs, etc. Schema explorer: https://sai-keeper.nibiru.fi/",
   rawQuerySchema,
   rawQuery,
+);
+
+// Write tools — require SAI_MNEMONIC or SAI_PRIVATE_KEY env var on the MCP server.
+register(
+  "sai_get_wallet_info",
+  "Return the configured signer's EVM and bech32 addresses, NIBI and USDC balances, current nonce, and chain config. Requires SAI_MNEMONIC or SAI_PRIVATE_KEY in the MCP server environment. Call this first to confirm which wallet is loaded before any write operation.",
+  getWalletInfoSchema,
+  getWalletInfo,
+);
+
+register(
+  "sai_open_trade",
+  "Open a long or short perpetual position on Sai using USDC collateral. Defaults to a DRY RUN that simulates and gas-estimates the trade without broadcasting — set confirm=true to actually send the transaction. The signer is loaded from SAI_MNEMONIC or SAI_PRIVATE_KEY on the MCP server. Always preview with confirm=false (or omit it) and show the summary to the user before re-running with confirm=true.",
+  openTradeSchema,
+  openTrade,
 );
 
 async function main() {
