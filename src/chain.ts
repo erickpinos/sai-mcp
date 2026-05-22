@@ -102,19 +102,57 @@ export type ResolvedWallet = {
   cfg: ChainCfg;
 };
 
+function normalizeMnemonic(raw: string): string {
+  // Collapse any whitespace run (spaces, tabs, newlines, NBSPs from copy-paste)
+  // into a single space and trim. ethers' fromPhrase requires exactly single
+  // spaces between words.
+  return raw.replace(/\s+/g, " ").trim();
+}
+
+function normalizePrivateKey(raw: string): string {
+  const trimmed = raw.trim();
+  return trimmed.startsWith("0x") || trimmed.startsWith("0X")
+    ? trimmed
+    : `0x${trimmed}`;
+}
+
 export function getWallet(network: Network = "mainnet"): ResolvedWallet {
   const cfg = CHAINS[network];
   const provider = new ethers.JsonRpcProvider(cfg.evmRpc);
 
-  const mnemonic = process.env.SAI_MNEMONIC ?? process.env.MNEMONIC;
-  const privateKey = process.env.SAI_PRIVATE_KEY ?? process.env.PRIVATE_KEY;
+  const rawMnemonic = process.env.SAI_MNEMONIC ?? process.env.MNEMONIC;
+  const rawPrivateKey = process.env.SAI_PRIVATE_KEY ?? process.env.PRIVATE_KEY;
   const derivationPath = process.env.SAI_DERIVATION_PATH ?? "m/44'/60'/0'/0/0";
 
+  if (rawMnemonic && rawPrivateKey) {
+    throw new Error(
+      "Both SAI_MNEMONIC and SAI_PRIVATE_KEY are set. Unset one to disambiguate which signer to use.",
+    );
+  }
+
   let wallet: ethers.HDNodeWallet | ethers.Wallet;
-  if (privateKey) {
-    wallet = new ethers.Wallet(privateKey, provider);
-  } else if (mnemonic) {
-    wallet = ethers.HDNodeWallet.fromPhrase(mnemonic, undefined, derivationPath).connect(provider);
+  if (rawPrivateKey) {
+    const pk = normalizePrivateKey(rawPrivateKey);
+    try {
+      wallet = new ethers.Wallet(pk, provider);
+    } catch (e) {
+      throw new Error(
+        `SAI_PRIVATE_KEY is not a valid private key (${(e as Error).message}). Expected a 32-byte hex string, optionally 0x-prefixed.`,
+      );
+    }
+  } else if (rawMnemonic) {
+    const phrase = normalizeMnemonic(rawMnemonic);
+    try {
+      wallet = ethers.HDNodeWallet.fromPhrase(
+        phrase,
+        undefined,
+        derivationPath,
+      ).connect(provider);
+    } catch (e) {
+      throw new Error(
+        `SAI_MNEMONIC is not a valid BIP-39 mnemonic (${(e as Error).message}). Expected a 12 or 24 word seed phrase.`,
+      );
+    }
   } else {
     throw new Error(
       "No signer configured. Set SAI_MNEMONIC (12/24-word seed) or SAI_PRIVATE_KEY in the MCP server's environment.",

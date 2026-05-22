@@ -102,7 +102,7 @@ export async function getMarket(args: {
 
 export const getTraderTradesSchema = {
   network: NetworkSchema,
-  trader: z.string().describe("Trader bech32 address (e.g. nibi1...)."),
+  trader: z.string().min(1).describe("Trader bech32 address (e.g. nibi1...)."),
   isOpen: z
     .boolean()
     .optional()
@@ -132,7 +132,7 @@ export async function getTraderTrades(args: {
   if (args.collateralId !== undefined) where.perpCollateralId = args.collateralId;
 
   const query = `
-    query Trades($where: PerpTradesFilter, $limit: Int, $offset: Int) {
+    query Trades($where: PerpTradesFilter!, $limit: Int, $offset: Int) {
       perp {
         trades(where: $where, limit: $limit, offset: $offset, order_desc: true) {
           id
@@ -179,7 +179,7 @@ export async function getTraderTrades(args: {
 
 export const getTraderHistorySchema = {
   network: NetworkSchema,
-  trader: z.string().describe("Trader bech32 address."),
+  trader: z.string().min(1).describe("Trader bech32 address."),
   limit: z.number().int().positive().max(500).default(50),
   offset: z.number().int().nonnegative().default(0),
 };
@@ -225,20 +225,20 @@ export async function getTraderHistory(args: {
 
 export const getUserPortfolioSchema = {
   network: NetworkSchema,
-  trader: z.string().describe("Trader bech32 address."),
+  trader: z.string().min(1).describe("Trader bech32 address."),
   range: z
-    .string()
-    .optional()
-    .describe("Time range string, e.g. '1d', '7d', '30d', 'all'."),
+    .enum(["1d", "7d", "30d", "all"])
+    .default("all")
+    .describe("Time range. Defaults to 'all'."),
 };
 
 export async function getUserPortfolio(args: {
   network?: Network;
   trader: string;
-  range?: string;
+  range?: "1d" | "7d" | "30d" | "all";
 }) {
   const query = `
-    query Portfolio($trader: String, $range: String) {
+    query Portfolio($trader: String!, $range: String!) {
       perp {
         statsUserPortfolio(trader: $trader, range: $range) {
           trader
@@ -256,14 +256,14 @@ export async function getUserPortfolio(args: {
   `;
   return graphqlRequest(
     query,
-    { trader: args.trader, range: args.range },
+    { trader: args.trader, range: args.range ?? "all" },
     args.network,
   );
 }
 
 export const getFeeTierProgressSchema = {
   network: NetworkSchema,
-  trader: z.string().describe("Trader bech32 address."),
+  trader: z.string().min(1).describe("Trader bech32 address."),
 };
 
 export async function getFeeTierProgress(args: {
@@ -271,7 +271,7 @@ export async function getFeeTierProgress(args: {
   trader: string;
 }) {
   const query = `
-    query FeeTier($trader: String) {
+    query FeeTier($trader: String!) {
       perp {
         traderFeeTierProgress(trader: $trader) {
           trader

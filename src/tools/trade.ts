@@ -27,25 +27,30 @@ export const openTradeSchema = {
     .number()
     .int()
     .positive()
+    .finite()
     .describe("Integer leverage (must be within market's min/max — see sai_get_market)."),
   amountUsdc: z
     .number()
     .positive()
-    .describe("Collateral in human USDC units (e.g. 10 = 10 USDC). USDC has 6 decimals on chain."),
+    .finite()
+    .describe("Collateral in human USDC units (e.g. 10 = 10 USDC). USDC has 6 decimals on chain — extra fractional digits are rejected."),
   slippagePct: z
     .number()
     .positive()
+    .finite()
     .default(1)
     .describe("Slippage tolerance in percent (default 1)."),
   tp: z
     .number()
     .positive()
+    .finite()
     .nullable()
     .default(null)
     .describe("Take-profit price (null for none)."),
   sl: z
     .number()
     .positive()
+    .finite()
     .nullable()
     .default(null)
     .describe("Stop-loss price (null for none)."),
@@ -56,6 +61,52 @@ export const openTradeSchema = {
       "Required to broadcast. Defaults to false (dry-run: simulate + gas-estimate only, do not sign or send). Set true to actually open the position.",
     ),
 };
+
+// JS Number.toString() emits scientific notation for |n| ≥ 1e21 or |n| < 1e-6.
+// ethers.parseUnits and the wasm msg both expect plain-decimal strings, so
+// normalize here.
+function toPlainDecimal(n: number, label: string): string {
+  if (!Number.isFinite(n)) {
+    throw new Error(`${label} must be a finite number (got ${n})`);
+  }
+  // toString() gives the shortest accurate decimal for most numbers; only falls
+  // back to scientific notation for |n| ≥ 1e21 or 0 < |n| < 1e-6. Expand those
+  // cases manually so downstream parseUnits / wasm msgs always see plain decimals.
+  const s = n.toString();
+  if (!/[eE]/.test(s)) return s;
+  const m = /^(-?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/.exec(s);
+  if (!m) {
+    throw new Error(`${label}=${n}: cannot convert to plain decimal`);
+  }
+  const sign = m[1];
+  const digits = m[2] + (m[3] ?? "");
+  const exp = parseInt(m[4], 10);
+  const dotPos = m[2].length + exp;
+  let out: string;
+  if (dotPos <= 0) {
+    const trimmed = digits.replace(/0+$/, "");
+    out = trimmed === "" ? "0" : "0." + "0".repeat(-dotPos) + trimmed;
+  } else if (dotPos >= digits.length) {
+    out = digits + "0".repeat(dotPos - digits.length);
+  } else {
+    const trimmed = (digits.slice(0, dotPos) + "." + digits.slice(dotPos))
+      .replace(/0+$/, "")
+      .replace(/\.$/, "");
+    out = trimmed;
+  }
+  return sign + out;
+}
+
+function toUsdcAmountString(n: number): string {
+  const s = toPlainDecimal(n, "amountUsdc");
+  const dot = s.indexOf(".");
+  if (dot !== -1 && s.length - dot - 1 > USDC_DECIMALS) {
+    throw new Error(
+      `amountUsdc has more than ${USDC_DECIMALS} fractional digits (got ${n}); USDC on chain only supports ${USDC_DECIMALS} decimals`,
+    );
+  }
+  return s;
+}
 
 type OpenTradeArgs = {
   network?: Network;
@@ -121,6 +172,11 @@ export async function openTrade(args: OpenTradeArgs) {
   if (!borrowing.isOpen) {
     throw new Error(`Market ${args.marketId} is currently closed`);
   }
+  if (!(borrowing.price > 0)) {
+    throw new Error(
+      `Market ${args.marketId} has no valid oracle price (got ${borrowing.price}); refusing to trade`,
+    );
+  }
   if (args.leverage < borrowing.minLeverage || args.leverage > borrowing.maxLeverage) {
     throw new Error(
       `Leverage ${args.leverage} outside allowed range [${borrowing.minLeverage}, ${borrowing.maxLeverage}] for market ${args.marketId}`,
@@ -132,10 +188,41 @@ export async function openTrade(args: OpenTradeArgs) {
       `Position size ${positionSizeUSD} USD below market minimum ${borrowing.minPositionSizeUSD} USD (collateral * leverage)`,
     );
   }
+  if (slippagePct > 50) {
+    throw new Error(
+      `slippagePct=${slippagePct} is unreasonably high (max 50). Set a realistic tolerance, typically 0.1–5.`,
+    );
+  }
+  // tp/sl direction sanity — the contract will accept any value but if tp/sl is
+  // on the wrong side of the entry price the position triggers immediately, so
+  // catch it here with an actionable error.
+  if (args.long) {
+    if (tp !== null && tp <= borrowing.price) {
+      throw new Error(
+        `LONG take-profit (${tp}) must be above current price (${borrowing.price}); otherwise the position fills and immediately triggers a loss`,
+      );
+    }
+    if (sl !== null && sl >= borrowing.price) {
+      throw new Error(
+        `LONG stop-loss (${sl}) must be below current price (${borrowing.price})`,
+      );
+    }
+  } else {
+    if (tp !== null && tp >= borrowing.price) {
+      throw new Error(
+        `SHORT take-profit (${tp}) must be below current price (${borrowing.price}); otherwise the position fills and immediately triggers a loss`,
+      );
+    }
+    if (sl !== null && sl <= borrowing.price) {
+      throw new Error(
+        `SHORT stop-loss (${sl}) must be above current price (${borrowing.price})`,
+      );
+    }
+  }
   const baseSym = borrowing.baseToken.symbol ?? borrowing.baseToken.name;
   const quoteSym = borrowing.quoteToken.symbol ?? borrowing.quoteToken.name;
 
-  const amount = ethers.parseUnits(args.amountUsdc.toString(), USDC_DECIMALS);
+  const amount = ethers.parseUnits(toUsdcAmountString(args.amountUsdc), USDC_DECIMALS);
 
   // --- balance check ---
   const usdc = new ethers.Contract(cfg.usdcEvm, ERC20_ABI, wallet);
@@ -155,10 +242,10 @@ export async function openTrade(args: OpenTradeArgs) {
       long: args.long,
       collateral_index: `TokenIndex(${cfg.usdcTokenIndex})`,
       trade_type: "trade" as const,
-      open_price: borrowing.price.toString(),
-      tp: tp === null ? null : tp.toString(),
-      sl: sl === null ? null : sl.toString(),
-      slippage_p: slippagePct.toString(),
+      open_price: toPlainDecimal(borrowing.price, "borrowing.price"),
+      tp: tp === null ? null : toPlainDecimal(tp, "tp"),
+      sl: sl === null ? null : toPlainDecimal(sl, "sl"),
+      slippage_p: toPlainDecimal(slippagePct, "slippagePct"),
       is_evm_origin: true,
     },
   };

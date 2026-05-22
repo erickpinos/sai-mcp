@@ -48,28 +48,38 @@ export async function listVaults(args: { network?: Network }) {
 
 export const getVaultStatsSchema = {
   network: NetworkSchema,
-  vault: z.string().describe("Vault address (nibi1...)."),
+  vault: z.string().min(1).describe("Vault address (nibi1...)."),
   range: z
-    .string()
-    .optional()
-    .describe("Time range, e.g. '1d', '7d', '30d', 'all'."),
+    .enum(["1d", "7d", "30d", "all"])
+    .default("all")
+    .describe("Time range. Defaults to 'all'."),
 };
 
 export async function getVaultStats(args: {
   network?: Network;
   vault: string;
-  range?: string;
+  range?: "1d" | "7d" | "30d" | "all";
 }) {
   const query = `
-    query VaultStats($vault: String, $range: String) {
+    query VaultStats($vault: String!, $range: String!) {
       lp {
-        vaultStats(vault: $vault, range: $range)
+        vaultStats(vault: $vault, range: $range) {
+          timestamp
+          sharePrice
+          apy
+          deposits
+          depositsUsd
+          withdrawals
+          withdrawalsUsd
+          volume
+          volumeUsd
+        }
       }
     }
   `;
   return graphqlRequest(
     query,
-    { vault: args.vault, range: args.range },
+    { vault: args.vault, range: args.range ?? "all" },
     args.network,
   );
 }
