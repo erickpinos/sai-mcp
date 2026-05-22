@@ -16,9 +16,9 @@ export const listMarketsSchema = {
 };
 
 export async function listMarkets(args: {
-  network?: Network;
-  visibleOnly?: boolean;
-  limit?: number;
+  network: Network;
+  visibleOnly: boolean;
+  limit: number;
 }) {
   // `borrowings` returns the short shape — for full market details use sai_get_market.
   const query = `
@@ -37,7 +37,7 @@ export async function listMarkets(args: {
   `;
   const data = await graphqlRequest<{
     perp: { borrowings: Array<{ visible: boolean }> };
-  }>(query, { limit: args.limit ?? 200 }, args.network);
+  }>(query, { limit: args.limit }, args.network);
   return args.visibleOnly
     ? data.perp.borrowings.filter((b) => b.visible)
     : data.perp.borrowings;
@@ -53,7 +53,7 @@ export const getMarketSchema = {
 };
 
 export async function getMarket(args: {
-  network?: Network;
+  network: Network;
   marketId: number;
   collateralId: number;
 }) {
@@ -118,13 +118,13 @@ export const getTraderTradesSchema = {
 };
 
 export async function getTraderTrades(args: {
-  network?: Network;
+  network: Network;
   trader: string;
   isOpen?: boolean;
   marketId?: number;
   collateralId?: number;
-  limit?: number;
-  offset?: number;
+  limit: number;
+  offset: number;
 }) {
   const where: Record<string, unknown> = { trader: args.trader };
   if (args.isOpen !== undefined) where.isOpen = args.isOpen;
@@ -172,7 +172,7 @@ export async function getTraderTrades(args: {
   `;
   return graphqlRequest(
     query,
-    { where, limit: args.limit ?? 50, offset: args.offset ?? 0 },
+    { where, limit: args.limit, offset: args.offset },
     args.network,
   );
 }
@@ -185,10 +185,10 @@ export const getTraderHistorySchema = {
 };
 
 export async function getTraderHistory(args: {
-  network?: Network;
+  network: Network;
   trader: string;
-  limit?: number;
-  offset?: number;
+  limit: number;
+  offset: number;
 }) {
   const query = `
     query History($where: PerpTradeHistoryFilter, $limit: Int, $offset: Int) {
@@ -216,8 +216,8 @@ export async function getTraderHistory(args: {
     query,
     {
       where: { trader: args.trader },
-      limit: args.limit ?? 50,
-      offset: args.offset ?? 0,
+      limit: args.limit,
+      offset: args.offset,
     },
     args.network,
   );
@@ -233,9 +233,9 @@ export const getUserPortfolioSchema = {
 };
 
 export async function getUserPortfolio(args: {
-  network?: Network;
+  network: Network;
   trader: string;
-  range?: "1d" | "7d" | "30d" | "all";
+  range: "1d" | "7d" | "30d" | "all";
 }) {
   const query = `
     query Portfolio($trader: String!, $range: String!) {
@@ -256,7 +256,7 @@ export async function getUserPortfolio(args: {
   `;
   return graphqlRequest(
     query,
-    { trader: args.trader, range: args.range ?? "all" },
+    { trader: args.trader, range: args.range },
     args.network,
   );
 }
@@ -267,7 +267,7 @@ export const getFeeTierProgressSchema = {
 };
 
 export async function getFeeTierProgress(args: {
-  network?: Network;
+  network: Network;
   trader: string;
 }) {
   const query = `

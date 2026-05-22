@@ -7,6 +7,7 @@ import {
   USDC_DECIMALS,
 } from "../chain.js";
 import { graphqlRequest, type Network } from "../client.js";
+import { assertTradeAllowed, loadTradeGuards } from "../guards.js";
 
 const NetworkSchema = z
   .enum(["mainnet", "testnet"])
@@ -62,43 +63,8 @@ export const openTradeSchema = {
     ),
 };
 
-// JS Number.toString() emits scientific notation for |n| ≥ 1e21 or |n| < 1e-6.
-// ethers.parseUnits and the wasm msg both expect plain-decimal strings, so
-// normalize here.
-function toPlainDecimal(n: number, label: string): string {
-  if (!Number.isFinite(n)) {
-    throw new Error(`${label} must be a finite number (got ${n})`);
-  }
-  // toString() gives the shortest accurate decimal for most numbers; only falls
-  // back to scientific notation for |n| ≥ 1e21 or 0 < |n| < 1e-6. Expand those
-  // cases manually so downstream parseUnits / wasm msgs always see plain decimals.
-  const s = n.toString();
-  if (!/[eE]/.test(s)) return s;
-  const m = /^(-?)(\d+)(?:\.(\d+))?[eE]([+-]?\d+)$/.exec(s);
-  if (!m) {
-    throw new Error(`${label}=${n}: cannot convert to plain decimal`);
-  }
-  const sign = m[1];
-  const digits = m[2] + (m[3] ?? "");
-  const exp = parseInt(m[4], 10);
-  const dotPos = m[2].length + exp;
-  let out: string;
-  if (dotPos <= 0) {
-    const trimmed = digits.replace(/0+$/, "");
-    out = trimmed === "" ? "0" : "0." + "0".repeat(-dotPos) + trimmed;
-  } else if (dotPos >= digits.length) {
-    out = digits + "0".repeat(dotPos - digits.length);
-  } else {
-    const trimmed = (digits.slice(0, dotPos) + "." + digits.slice(dotPos))
-      .replace(/0+$/, "")
-      .replace(/\.$/, "");
-    out = trimmed;
-  }
-  return sign + out;
-}
-
 function toUsdcAmountString(n: number): string {
-  const s = toPlainDecimal(n, "amountUsdc");
+  const s = n.toString();
   const dot = s.indexOf(".");
   if (dot !== -1 && s.length - dot - 1 > USDC_DECIMALS) {
     throw new Error(
@@ -108,16 +74,19 @@ function toUsdcAmountString(n: number): string {
   return s;
 }
 
+// All fields are required at runtime — the MCP SDK runs the Zod schema
+// (which declares `.default(...)` for optional inputs) before calling here,
+// so the handler always sees fully-populated args.
 type OpenTradeArgs = {
-  network?: Network;
+  network: Network;
   marketId: number;
   long: boolean;
   leverage: number;
   amountUsdc: number;
-  slippagePct?: number;
-  tp?: number | null;
-  sl?: number | null;
-  confirm?: boolean;
+  slippagePct: number;
+  tp: number | null;
+  sl: number | null;
+  confirm: boolean;
 };
 
 type Borrowing = {
@@ -159,16 +128,19 @@ async function fetchBorrowing(
 }
 
 export async function openTrade(args: OpenTradeArgs) {
-  const network = args.network ?? "mainnet";
-  const slippagePct = args.slippagePct ?? 1;
-  const tp = args.tp ?? null;
-  const sl = args.sl ?? null;
-  const confirm = args.confirm ?? false;
+  // Operator-set caps (env vars) — apply before any network call. Always
+  // enforced, even in dry-run, so the agent gets an immediate signal that the
+  // operation is off-limits rather than discovering it after simulation.
+  const guards = loadTradeGuards();
+  assertTradeAllowed(
+    { marketId: args.marketId, amountUsdc: args.amountUsdc, leverage: args.leverage },
+    guards,
+  );
 
-  const { wallet, provider, evmAddress, bech32Address, cfg } = getWallet(network);
+  const { wallet, provider, evmAddress, bech32Address, cfg } = getWallet(args.network);
 
   // --- market info ---
-  const borrowing = await fetchBorrowing(network, args.marketId, cfg.usdcTokenIndex);
+  const borrowing = await fetchBorrowing(args.network, args.marketId, cfg.usdcTokenIndex);
   if (!borrowing.isOpen) {
     throw new Error(`Market ${args.marketId} is currently closed`);
   }
@@ -188,34 +160,34 @@ export async function openTrade(args: OpenTradeArgs) {
       `Position size ${positionSizeUSD} USD below market minimum ${borrowing.minPositionSizeUSD} USD (collateral * leverage)`,
     );
   }
-  if (slippagePct > 50) {
+  if (args.slippagePct > 50) {
     throw new Error(
-      `slippagePct=${slippagePct} is unreasonably high (max 50). Set a realistic tolerance, typically 0.1–5.`,
+      `slippagePct=${args.slippagePct} is unreasonably high (max 50). Set a realistic tolerance, typically 0.1–5.`,
     );
   }
   // tp/sl direction sanity — the contract will accept any value but if tp/sl is
   // on the wrong side of the entry price the position triggers immediately, so
   // catch it here with an actionable error.
   if (args.long) {
-    if (tp !== null && tp <= borrowing.price) {
+    if (args.tp !== null && args.tp <= borrowing.price) {
       throw new Error(
-        `LONG take-profit (${tp}) must be above current price (${borrowing.price}); otherwise the position fills and immediately triggers a loss`,
+        `LONG take-profit (${args.tp}) must be above current price (${borrowing.price}); otherwise the position fills and immediately triggers a loss`,
       );
     }
-    if (sl !== null && sl >= borrowing.price) {
+    if (args.sl !== null && args.sl >= borrowing.price) {
       throw new Error(
-        `LONG stop-loss (${sl}) must be below current price (${borrowing.price})`,
+        `LONG stop-loss (${args.sl}) must be below current price (${borrowing.price})`,
       );
     }
   } else {
-    if (tp !== null && tp >= borrowing.price) {
+    if (args.tp !== null && args.tp >= borrowing.price) {
       throw new Error(
-        `SHORT take-profit (${tp}) must be below current price (${borrowing.price}); otherwise the position fills and immediately triggers a loss`,
+        `SHORT take-profit (${args.tp}) must be below current price (${borrowing.price}); otherwise the position fills and immediately triggers a loss`,
       );
     }
-    if (sl !== null && sl <= borrowing.price) {
+    if (args.sl !== null && args.sl <= borrowing.price) {
       throw new Error(
-        `SHORT stop-loss (${sl}) must be above current price (${borrowing.price})`,
+        `SHORT stop-loss (${args.sl}) must be above current price (${borrowing.price})`,
       );
     }
   }
@@ -242,10 +214,10 @@ export async function openTrade(args: OpenTradeArgs) {
       long: args.long,
       collateral_index: `TokenIndex(${cfg.usdcTokenIndex})`,
       trade_type: "trade" as const,
-      open_price: toPlainDecimal(borrowing.price, "borrowing.price"),
-      tp: tp === null ? null : toPlainDecimal(tp, "tp"),
-      sl: sl === null ? null : toPlainDecimal(sl, "sl"),
-      slippage_p: toPlainDecimal(slippagePct, "slippagePct"),
+      open_price: borrowing.price.toString(),
+      tp: args.tp === null ? null : args.tp.toString(),
+      sl: args.sl === null ? null : args.sl.toString(),
+      slippage_p: args.slippagePct.toString(),
       is_evm_origin: true,
     },
   };
@@ -280,7 +252,7 @@ export async function openTrade(args: OpenTradeArgs) {
   const nonce = await provider.getTransactionCount(evmAddress);
 
   const summary = {
-    network,
+    network: args.network,
     market: {
       marketId: args.marketId,
       symbol: `${baseSym}/${quoteSym}`,
@@ -293,9 +265,9 @@ export async function openTrade(args: OpenTradeArgs) {
       leverage: args.leverage,
       collateralUsdc: args.amountUsdc,
       positionSizeUsd: positionSizeUSD,
-      slippagePct,
-      tp,
-      sl,
+      slippagePct: args.slippagePct,
+      tp: args.tp,
+      sl: args.sl,
     },
     wallet: {
       evmAddress,
@@ -310,10 +282,18 @@ export async function openTrade(args: OpenTradeArgs) {
       estimationError,
       gasPrice: "0 (sponsored by chain when targeting PerpVaultEvmInterface)",
     },
+    guards: {
+      maxTradeUsdc: guards.maxTradeUsdc,
+      maxLeverage: guards.maxLeverage,
+      maxPositionUsd: guards.maxPositionUsd,
+      marketAllowlist: guards.marketAllowlist
+        ? [...guards.marketAllowlist].sort((a, b) => a - b)
+        : null,
+    },
     wasmMsg,
   };
 
-  if (!confirm) {
+  if (!args.confirm) {
     return {
       ...summary,
       status: "dry-run",

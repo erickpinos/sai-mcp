@@ -130,7 +130,7 @@ These tools sign and broadcast on-chain transactions. They are inert unless you 
 | `sai_get_wallet_info` | Report the configured signer's EVM + bech32 addresses, NIBI/USDC balances, nonce, and chain config |
 | `sai_open_trade` | Open a long or short perp position with USDC collateral. **Defaults to dry-run** — pass `confirm: true` to broadcast |
 
-**Safety model.** `sai_open_trade` defaults to `confirm: false`, which simulates the trade (gas estimate + validation against market constraints) without signing or broadcasting. The returned summary includes the resolved market, position size, wallet, and the encoded wasm message. Set `confirm: true` only after reviewing the dry-run output. The MCP server refuses to broadcast if gas estimation fails.
+**Safety model.** `sai_open_trade` defaults to `confirm: false`, which simulates the trade (gas estimate + validation against market constraints) without signing or broadcasting. The returned summary includes the resolved market, position size, wallet, and the encoded wasm message. Set `confirm: true` only after reviewing the dry-run output. The MCP server refuses to broadcast if gas estimation fails. Operators can further constrain trades with env-based caps — see [Trade guard rails](#trade-guard-rails-operator-set-caps).
 
 The trade is executed via the `PerpVaultEvmInterface` contract on Nibiru's EVM. Gas is sponsored by the chain when targeting this contract, so the wallet does not need NIBI for gas — only USDC for collateral. No ERC20 approve is required; the contract pulls USDC directly via the Nibiru funtoken precompile.
 
@@ -172,6 +172,19 @@ Optional:
 ```bash
 SAI_DERIVATION_PATH="m/44'/60'/0'/0/0"   # default; for mnemonic only
 ```
+
+#### Trade guard rails (operator-set caps)
+
+When the MCP server runs in an agent loop, set hard ceilings the agent cannot raise. Unset = no cap on that dimension; the underlying market constraints still apply.
+
+```bash
+SAI_MAX_TRADE_USDC="100"          # max collateral per trade, in human USDC units
+SAI_MAX_LEVERAGE="10"             # max leverage per trade
+SAI_MAX_POSITION_USD="1000"       # max notional (collateral × leverage)
+SAI_MARKET_ALLOWLIST="0,1,16"     # comma-separated marketIds (e.g. 0=BTC, 1=ETH, 16=SOL)
+```
+
+Caps are enforced before any network call — including in dry-run mode — so an over-limit request returns an immediate error rather than a confusing simulation. The active caps are echoed back in `sai_open_trade`'s dry-run summary under `guards`, so the agent can see what's in effect.
 
 In a Claude Desktop / Cursor / Claude Code config, pass the env via the `env` field:
 

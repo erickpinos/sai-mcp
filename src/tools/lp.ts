@@ -10,7 +10,7 @@ export const listVaultsSchema = {
   network: NetworkSchema,
 };
 
-export async function listVaults(args: { network?: Network }) {
+export async function listVaults(args: { network: Network }) {
   const query = `
     {
       lp {
@@ -56,9 +56,9 @@ export const getVaultStatsSchema = {
 };
 
 export async function getVaultStats(args: {
-  network?: Network;
+  network: Network;
   vault: string;
-  range?: "1d" | "7d" | "30d" | "all";
+  range: "1d" | "7d" | "30d" | "all";
 }) {
   const query = `
     query VaultStats($vault: String!, $range: String!) {
@@ -79,7 +79,7 @@ export async function getVaultStats(args: {
   `;
   return graphqlRequest(
     query,
-    { vault: args.vault, range: args.range ?? "all" },
+    { vault: args.vault, range: args.range },
     args.network,
   );
 }
@@ -93,11 +93,11 @@ export const getDepositHistorySchema = {
 };
 
 export async function getDepositHistory(args: {
-  network?: Network;
+  network: Network;
   depositor?: string;
   vault?: string;
-  limit?: number;
-  offset?: number;
+  limit: number;
+  offset: number;
 }) {
   const where: Record<string, unknown> = {};
   if (args.depositor) where.depositor = args.depositor;
@@ -123,7 +123,7 @@ export async function getDepositHistory(args: {
   `;
   return graphqlRequest(
     query,
-    { where, limit: args.limit ?? 50, offset: args.offset ?? 0 },
+    { where, limit: args.limit, offset: args.offset },
     args.network,
   );
 }
@@ -137,11 +137,11 @@ export const getWithdrawRequestsSchema = {
 };
 
 export async function getWithdrawRequests(args: {
-  network?: Network;
+  network: Network;
   depositor?: string;
   vault?: string;
-  limit?: number;
-  offset?: number;
+  limit: number;
+  offset: number;
 }) {
   const where: Record<string, unknown> = {};
   if (args.depositor) where.depositor = args.depositor;
@@ -166,7 +166,7 @@ export async function getWithdrawRequests(args: {
   `;
   return graphqlRequest(
     query,
-    { where, limit: args.limit ?? 100, offset: args.offset ?? 0 },
+    { where, limit: args.limit, offset: args.offset },
     args.network,
   );
 }

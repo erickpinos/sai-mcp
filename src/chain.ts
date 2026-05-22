@@ -1,3 +1,4 @@
+import { bech32 } from "bech32";
 import { ethers } from "ethers";
 import type { Network } from "./client.js";
 
@@ -36,61 +37,9 @@ export const CHAINS: Record<Network, ChainCfg> = {
 export const USDC_DECIMALS = 6;
 export const NIBI_DECIMALS = 6;
 
-// ----- bech32 (EVM address -> nibi1...) -----
-const BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
-const BECH32_GENERATOR = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
-
-function bech32Polymod(values: number[]): number {
-  let chk = 1;
-  for (const v of values) {
-    const top = chk >>> 25;
-    chk = ((chk & 0x1ffffff) << 5) ^ v;
-    for (let i = 0; i < 5; i++) {
-      if ((top >> i) & 1) chk ^= BECH32_GENERATOR[i];
-    }
-  }
-  return chk;
-}
-
-function bech32HrpExpand(hrp: string): number[] {
-  const ret: number[] = [];
-  for (let i = 0; i < hrp.length; i++) ret.push(hrp.charCodeAt(i) >> 5);
-  ret.push(0);
-  for (let i = 0; i < hrp.length; i++) ret.push(hrp.charCodeAt(i) & 31);
-  return ret;
-}
-
-function bech32CreateChecksum(hrp: string, data: number[]): number[] {
-  const values = [...bech32HrpExpand(hrp), ...data, 0, 0, 0, 0, 0, 0];
-  const mod = bech32Polymod(values) ^ 1;
-  const ret: number[] = [];
-  for (let i = 0; i < 6; i++) ret.push((mod >> (5 * (5 - i))) & 31);
-  return ret;
-}
-
-function convertBits(data: number[], from: number, to: number, pad: boolean): number[] {
-  let acc = 0;
-  let bits = 0;
-  const ret: number[] = [];
-  const maxv = (1 << to) - 1;
-  for (const value of data) {
-    if (value < 0 || value >> from !== 0) throw new Error("convertBits: invalid value");
-    acc = (acc << from) | value;
-    bits += from;
-    while (bits >= to) {
-      bits -= to;
-      ret.push((acc >> bits) & maxv);
-    }
-  }
-  if (pad && bits > 0) ret.push((acc << (to - bits)) & maxv);
-  return ret;
-}
-
 export function evmToBech32(evmAddr: string, hrp = "nibi"): string {
-  const bytes = Array.from(ethers.getBytes(evmAddr));
-  const words = convertBits(bytes, 8, 5, true);
-  const checksum = bech32CreateChecksum(hrp, words);
-  return hrp + "1" + [...words, ...checksum].map((d) => BECH32_CHARSET[d]).join("");
+  const bytes = ethers.getBytes(evmAddr);
+  return bech32.encode(hrp, bech32.toWords(bytes));
 }
 
 // ----- signer setup -----
@@ -120,8 +69,8 @@ export function getWallet(network: Network = "mainnet"): ResolvedWallet {
   const cfg = CHAINS[network];
   const provider = new ethers.JsonRpcProvider(cfg.evmRpc);
 
-  const rawMnemonic = process.env.SAI_MNEMONIC ?? process.env.MNEMONIC;
-  const rawPrivateKey = process.env.SAI_PRIVATE_KEY ?? process.env.PRIVATE_KEY;
+  const rawMnemonic = process.env.SAI_MNEMONIC;
+  const rawPrivateKey = process.env.SAI_PRIVATE_KEY;
   const derivationPath = process.env.SAI_DERIVATION_PATH ?? "m/44'/60'/0'/0/0";
 
   if (rawMnemonic && rawPrivateKey) {

@@ -40,10 +40,11 @@ function assertReadOnly(query: string): void {
 }
 
 export async function rawQuery(args: {
-  network?: Network;
+  network: Network;
   query: string;
   variables?: Record<string, unknown>;
 }) {
   assertReadOnly(args.query);
-  return graphqlRequest(args.query, args.variables ?? {}, args.network);
+  // graphqlRequest defaults variables to {} when undefined.
+  return graphqlRequest(args.query, args.variables, args.network);
 }

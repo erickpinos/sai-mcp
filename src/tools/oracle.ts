@@ -17,9 +17,9 @@ export const getTokenPricesSchema = {
 };
 
 export async function getTokenPrices(args: {
-  network?: Network;
+  network: Network;
   tokenId?: number;
-  limit?: number;
+  limit: number;
 }) {
   const where = args.tokenId !== undefined ? { tokenId: args.tokenId } : {};
   const query = `
@@ -35,7 +35,7 @@ export async function getTokenPrices(args: {
   `;
   return graphqlRequest(
     query,
-    { where, limit: args.limit ?? 200 },
+    { where, limit: args.limit },
     args.network,
   );
 }
@@ -45,7 +45,7 @@ export const listTokensSchema = {
   limit: z.number().int().positive().max(500).default(200),
 };
 
-export async function listTokens(args: { network?: Network; limit?: number }) {
+export async function listTokens(args: { network: Network; limit: number }) {
   const query = `
     query Tokens($limit: Int) {
       oracle {
@@ -61,5 +61,5 @@ export async function listTokens(args: { network?: Network; limit?: number }) {
       }
     }
   `;
-  return graphqlRequest(query, { limit: args.limit ?? 200 }, args.network);
+  return graphqlRequest(query, { limit: args.limit }, args.network);
 }

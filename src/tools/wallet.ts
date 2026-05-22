@@ -18,8 +18,8 @@ export const getWalletInfoSchema = {
   network: NetworkSchema,
 };
 
-export async function getWalletInfo(args: { network?: Network }) {
-  const { wallet, provider, evmAddress, bech32Address, cfg } = getWallet(args.network);
+export async function getWalletInfo(args: { network: Network }) {
+  const { provider, evmAddress, bech32Address, cfg } = getWallet(args.network);
 
   const [nibiEvmRaw, nibiBankRaw, usdcErc20Raw, usdcBankRaw, nonce] = await Promise.all([
     provider.getBalance(evmAddress),
@@ -37,7 +37,7 @@ export async function getWalletInfo(args: { network?: Network }) {
   const usdcBankHuman = ethers.formatUnits(usdcBankRaw, USDC_DECIMALS);
 
   return {
-    network: args.network ?? "mainnet",
+    network: args.network,
     evmAddress,
     bech32Address,
     nonce,
@@ -58,11 +58,6 @@ export async function getWalletInfo(args: { network?: Network }) {
       cosmosRest: cfg.cosmosRest,
       evmInterface: cfg.evmInterface,
     },
-    signerSource: process.env.SAI_PRIVATE_KEY || process.env.PRIVATE_KEY
-      ? "SAI_PRIVATE_KEY"
-      : "SAI_MNEMONIC",
-    note: wallet.address === evmAddress
-      ? undefined
-      : "wallet/provider address mismatch (should not happen)",
+    signerSource: process.env.SAI_PRIVATE_KEY ? "SAI_PRIVATE_KEY" : "SAI_MNEMONIC",
   };
 }
