@@ -145,8 +145,14 @@ export async function getTraderTrades(args: {
 }) {
   const where: Record<string, unknown> = { trader: args.trader };
   if (args.isOpen !== undefined) where.isOpen = args.isOpen;
-  if (args.marketId !== undefined) where.perpMarketId = args.marketId;
   if (args.collateralId !== undefined) where.perpCollateralId = args.collateralId;
+  // NOTE: the keeper's `perpMarketId` filter is broken server-side. It
+  // generates SQL referencing a non-existent column `pt.market_id`
+  // (SQLSTATE 42703), so passing it 500s the whole query. We omit it from the
+  // server `where` and filter by marketId client-side below. When marketId is
+  // set we fetch the full page (schema max) and paginate the filtered result
+  // ourselves so limit/offset still apply to the per-market set.
+  const marketFilter = args.marketId !== undefined;
 
   const query = `
     query Trades($where: PerpTradesFilter!, $limit: Int, $offset: Int) {
@@ -187,11 +193,25 @@ export async function getTraderTrades(args: {
       }
     }
   `;
-  return graphqlRequest(
+  const data = await graphqlRequest<{
+    perp: { trades: Array<{ perpBorrowing: { marketId: number } }> } | null;
+  }>(
     query,
-    { where, limit: args.limit, offset: args.offset },
+    {
+      where,
+      limit: marketFilter ? 500 : args.limit,
+      offset: marketFilter ? 0 : args.offset,
+    },
     args.network,
   );
+
+  if (marketFilter && data?.perp?.trades) {
+    const filtered = data.perp.trades.filter(
+      (t) => t.perpBorrowing?.marketId === args.marketId,
+    );
+    data.perp.trades = filtered.slice(args.offset, args.offset + args.limit);
+  }
+  return data;
 }
 
 export const getTraderHistorySchema = {

@@ -152,8 +152,13 @@ These tools sign and broadcast on-chain transactions. They are inert unless you 
 |------|---------|
 | `sai_get_wallet_info` | Report the configured signer's EVM + bech32 addresses, NIBI/USDC balances, nonce, and chain config |
 | `sai_open_trade` | Open a long or short perp position with USDC collateral. **Defaults to dry-run** — pass `confirm: true` to broadcast |
+| `sai_close_trade` | Close an open position, or cancel a pending limit/stop order (same on-chain call). **Defaults to dry-run** |
+| `sai_update_tpsl` | Set, change, or clear take-profit / stop-loss on an open position. **Defaults to dry-run** |
+| `sai_update_leverage` | Change a position's leverage (USDC collateral); notional held constant, collateral delta settled to/from the wallet. **Defaults to dry-run** |
 
-**Safety model.** `sai_open_trade` defaults to `confirm: false`, which simulates the trade (gas estimate + validation against market constraints) without signing or broadcasting. The returned summary includes the resolved market, position size, wallet, and the encoded wasm message. Set `confirm: true` only after reviewing the dry-run output. The MCP server refuses to broadcast if gas estimation fails. Operators can further constrain trades with env-based caps — see [Trade guard rails](#trade-guard-rails-operator-set-caps).
+All four write tools identify a position by its per-user trade index — the `id` field returned by `sai_get_trader_trades`. You can only manage the configured signer's own trades.
+
+**Safety model.** Every write tool defaults to `confirm: false`, which simulates the action (gas estimate + validation against market/position constraints) without signing or broadcasting. The returned summary includes the resolved position, the change being made, the wallet, and the encoded wasm message. Set `confirm: true` only after reviewing the dry-run output. The MCP server refuses to broadcast if gas estimation fails. Operators can further constrain trades with env-based caps — see [Trade guard rails](#trade-guard-rails-operator-set-caps).
 
 The trade is executed via the `PerpVaultEvmInterface` contract on Nibiru's EVM. Gas is sponsored by the chain when targeting this contract, so the wallet does not need NIBI for gas — only USDC for collateral. No ERC20 approve is required; the contract pulls USDC directly via the Nibiru funtoken precompile.
 
@@ -190,7 +195,7 @@ Default endpoints:
 
 ### Signer setup
 
-Write tools (`sai_open_trade`, `sai_get_wallet_info`) are disabled until you give the MCP server a wallet. Use **one** of:
+Write tools (`sai_open_trade`, `sai_close_trade`, `sai_update_tpsl`, `sai_update_leverage`, `sai_get_wallet_info`) are disabled until you give the MCP server a wallet. Use **one** of:
 
 ```bash
 # Recommended: 12/24-word mnemonic

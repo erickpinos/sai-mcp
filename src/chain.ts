@@ -133,6 +133,12 @@ export async function fetchBankBalance(
 
 export const PERP_VAULT_EVM_ABI = [
   "function openTrade(bytes wasmMsgExecute, uint256 collateralIndex, uint256 tradeAmount, uint256 useERC20Amount)",
+  // close_trade (also cancels a pending limit/stop order) and update_tp are both
+  // dispatched through executeSimpleFunctions with a wasm message payload.
+  "function executeSimpleFunctions(bytes wasmMsgExecute)",
+  // Leverage changes settle a collateral delta, so they have a dedicated method
+  // rather than going through executeSimpleFunctions.
+  "function updateLeverage(uint256 tradeIndex, uint256 newLeverage, uint256 collateralIndex, uint256 collateralAmount, uint256 useErc20Amount)",
 ];
 
 export const ERC20_ABI = [

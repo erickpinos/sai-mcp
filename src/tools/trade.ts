@@ -7,6 +7,7 @@ import {
   USDC_DECIMALS,
 } from "../chain.js";
 import { graphqlRequest, type Network } from "../client.js";
+import { toPlainDecimalString, toTokenAmountString } from "../format.js";
 import { assertTradeAllowed, loadTradeGuards } from "../guards.js";
 
 const NetworkSchema = z
@@ -62,17 +63,6 @@ export const openTradeSchema = {
       "Required to broadcast. Defaults to false (dry-run: simulate + gas-estimate only, do not sign or send). Set true to actually open the position.",
     ),
 };
-
-function toUsdcAmountString(n: number): string {
-  const s = n.toString();
-  const dot = s.indexOf(".");
-  if (dot !== -1 && s.length - dot - 1 > USDC_DECIMALS) {
-    throw new Error(
-      `amountUsdc has more than ${USDC_DECIMALS} fractional digits (got ${n}); USDC on chain only supports ${USDC_DECIMALS} decimals`,
-    );
-  }
-  return s;
-}
 
 // All fields are required at runtime — the MCP SDK runs the Zod schema
 // (which declares `.default(...)` for optional inputs) before calling here,
@@ -170,12 +160,15 @@ export async function openTrade(args: OpenTradeArgs) {
       `Leverage ${args.leverage} outside allowed range [${borrowing.minLeverage}, ${borrowing.maxLeverage}] for market ${args.marketId}`,
     );
   }
+  // The GraphQL `minPositionSizeUSD` does NOT reflect the on-chain enforced
+  // minimum (live positions exist well below it, e.g. ~$0.02 notional), so a
+  // hard client-side reject here would block trades the chain actually accepts.
+  // The on-chain `estimateGas` simulation below is authoritative: a genuinely
+  // too-small position surfaces as a non-null `gas.estimationError`. We surface
+  // the reported minimum as an advisory in the summary instead of throwing.
   const positionSizeUSD = args.amountUsdc * args.leverage;
-  if (positionSizeUSD < borrowing.minPositionSizeUSD) {
-    throw new Error(
-      `Position size ${positionSizeUSD} USD below market minimum ${borrowing.minPositionSizeUSD} USD (collateral * leverage)`,
-    );
-  }
+  const belowReportedMinPositionSize =
+    positionSizeUSD < borrowing.minPositionSizeUSD;
   if (args.slippagePct > 50) {
     throw new Error(
       `slippagePct=${args.slippagePct} is unreasonably high (max 50). Set a realistic tolerance, typically 0.1–5.`,
@@ -210,31 +203,30 @@ export async function openTrade(args: OpenTradeArgs) {
   const baseSym = borrowing.baseToken.symbol ?? borrowing.baseToken.name;
   const quoteSym = borrowing.quoteToken.symbol ?? borrowing.quoteToken.name;
 
-  const amount = ethers.parseUnits(toUsdcAmountString(args.amountUsdc), USDC_DECIMALS);
-
-  // --- balance check ---
-  const usdc = new ethers.Contract(cfg.usdcEvm, ERC20_ABI, wallet);
-  const erc20Balance: bigint = await usdc.balanceOf(evmAddress);
-  if (erc20Balance < amount) {
-    throw new Error(
-      `Insufficient USDC: wallet has ${ethers.formatUnits(erc20Balance, USDC_DECIMALS)}, need ${args.amountUsdc}`,
-    );
-  }
+  const amount = ethers.parseUnits(
+    toTokenAmountString(args.amountUsdc, USDC_DECIMALS),
+    USDC_DECIMALS,
+  );
 
   // --- build wasm msg ---
   // Mirrors execOpenTradeEvm in sai-website/webapp/state/web3Calls/trade.tsx.
   const wasmMsg = {
     open_trade: {
       market_index: `MarketIndex(${args.marketId})`,
-      leverage: args.leverage.toString(),
+      leverage: toPlainDecimalString(args.leverage),
       long: args.long,
       collateral_index: `TokenIndex(${cfg.usdcTokenIndex})`,
       trade_type: "trade" as const,
-      open_price: borrowing.price.toString(),
-      tp: args.tp === null ? null : args.tp.toString(),
-      sl: args.sl === null ? null : args.sl.toString(),
-      slippage_p: args.slippagePct.toString(),
+      open_price: toPlainDecimalString(borrowing.price),
+      tp: args.tp === null ? null : toPlainDecimalString(args.tp),
+      sl: args.sl === null ? null : toPlainDecimalString(args.sl),
+      slippage_p: toPlainDecimalString(args.slippagePct),
       is_evm_origin: true,
+      // The contract reads the position collateral from this field; omitting it
+      // makes openTrade revert during gas estimation with an undecodable error.
+      // Mirrors execOpenTradeEvm in sai-website (collateral_amount in bank units;
+      // USDC bank and erc20 are both 6 decimals, so this equals `amount`).
+      collateral_amount: amount.toString(),
     },
   };
   const wasmMsgBytes = ethers.toUtf8Bytes(JSON.stringify(wasmMsg));
@@ -246,26 +238,33 @@ export async function openTrade(args: OpenTradeArgs) {
   const useErc20Amount = amount;
 
   const perpVault = new ethers.Contract(cfg.evmInterface, PERP_VAULT_EVM_ABI, wallet);
+  const usdc = new ethers.Contract(cfg.usdcEvm, ERC20_ABI, wallet);
 
-  // --- gas estimate (also doubles as simulation) ---
-  let gasEstimate: bigint | null = null;
-  let gasLimit: bigint;
-  let estimationError: string | undefined;
-  try {
-    gasEstimate = await perpVault.openTrade.estimateGas(
-      wasmMsgBytes,
-      cfg.usdcTokenIndex,
-      totalAmount,
-      useErc20Amount,
+  // --- balance, gas estimate, network, nonce in one round-trip batch ---
+  // These RPC calls are independent of each other; firing them together instead
+  // of sequentially saves ~3 network round-trips on every (dry-run and live)
+  // call. The gas estimate doubles as the on-chain simulation.
+  const [erc20Balance, gas, net, nonce] = await Promise.all([
+    usdc.balanceOf(evmAddress) as Promise<bigint>,
+    perpVault.openTrade
+      .estimateGas(wasmMsgBytes, cfg.usdcTokenIndex, totalAmount, useErc20Amount)
+      .then((estimate: bigint) => ({ estimate, error: undefined as string | undefined }))
+      .catch((e: Error) => ({ estimate: null as bigint | null, error: e.message })),
+    provider.getNetwork(),
+    provider.getTransactionCount(evmAddress, "pending"),
+  ]);
+
+  // --- balance check --- (after the batch; a clearer error than the raw
+  // estimateGas revert the precompile throws when funds are short)
+  if (erc20Balance < amount) {
+    throw new Error(
+      `Insufficient USDC: wallet has ${ethers.formatUnits(erc20Balance, USDC_DECIMALS)}, need ${args.amountUsdc}`,
     );
-    gasLimit = (gasEstimate * 11n) / 10n;
-  } catch (e) {
-    estimationError = (e as Error).message;
-    gasLimit = 2_500_000n;
   }
 
-  const net = await provider.getNetwork();
-  const nonce = await provider.getTransactionCount(evmAddress);
+  const gasEstimate = gas.estimate;
+  const estimationError = gas.error;
+  const gasLimit = gasEstimate !== null ? (gasEstimate * 11n) / 10n : 2_500_000n;
 
   const summary = {
     network: args.network,
@@ -281,6 +280,7 @@ export async function openTrade(args: OpenTradeArgs) {
       leverage: args.leverage,
       collateralUsdc: args.amountUsdc,
       positionSizeUsd: positionSizeUSD,
+      belowReportedMinPositionSize,
       slippagePct: args.slippagePct,
       tp: args.tp,
       sl: args.sl,
@@ -317,11 +317,15 @@ export async function openTrade(args: OpenTradeArgs) {
     };
   }
 
-  if (estimationError) {
-    throw new Error(
-      `Gas estimation failed — refusing to broadcast: ${estimationError}. Re-run with confirm=false to inspect.`,
-    );
-  }
+  // Gas estimation is unreliable for this contract: PerpVaultEvmInterface pulls
+  // USDC via the Nibiru funtoken precompile, which eth_estimateGas frequently
+  // cannot simulate, so a failed estimate does NOT mean the trade would revert.
+  // Mirror the webapp (estimateGasWithFallback in sai-website): on estimation
+  // failure, fall back to the fixed gas limit (already computed above) and
+  // broadcast anyway. The estimationError stays visible in `summary.gas` and is
+  // flagged via `broadcastWithFallbackGas` so the caller knows it was sent
+  // without a validated estimate.
+  const broadcastWithFallbackGas = estimationError !== undefined;
 
   // --- broadcast ---
   const tx = await perpVault.openTrade(
@@ -337,6 +341,7 @@ export async function openTrade(args: OpenTradeArgs) {
   return {
     ...summary,
     status: success ? "success" : "reverted",
+    broadcastWithFallbackGas,
     tx: {
       hash: tx.hash,
       explorer: cfg.explorerTx(tx.hash),

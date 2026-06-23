@@ -49,6 +49,14 @@ import { getCandles, getCandlesSchema } from "./tools/candles.js";
 import { rawQuery, rawQuerySchema } from "./tools/raw.js";
 import { getWalletInfo, getWalletInfoSchema } from "./tools/wallet.js";
 import { openTrade, openTradeSchema } from "./tools/trade.js";
+import {
+  closeTrade,
+  closeTradeSchema,
+  updateTpSl,
+  updateTpSlSchema,
+  updateLeverage,
+  updateLeverageSchema,
+} from "./tools/manage.js";
 
 const server = new McpServer({
   name: "sai-mcp",
@@ -109,14 +117,14 @@ register(
 
 register(
   "sai_get_trader_trades",
-  "List a trader's open and closed perpetual positions with real-time PnL, leverage, liquidation price, and accumulated fees.",
+  "List a trader's open and closed perpetual positions with live PnL, leverage, liquidation price, tp/sl, and accumulated fees. NOTE: this reads the keeper's indexed state, which is delayed behind the chain by a few seconds to ~1-2 minutes. It is NOT read-your-writes: immediately after a sai_open_trade / sai_update_tpsl / sai_update_leverage / sai_close_trade broadcast, this may still show the pre-update values (stale leverage, tp/sl, or open/closed state). To confirm a write took effect, trust the broadcast's tx receipt (status: success) and/or the matching sai_get_trader_history event; only treat this query as authoritative once the indexer has caught up.",
   getTraderTradesSchema,
   getTraderTrades,
 );
 
 register(
   "sai_get_trader_history",
-  "List a trader's position events (open, close, liquidation, SL/TP triggered) with realized PnL, tx hashes, and block timestamps.",
+  "List a trader's position events (position_opened, position_closed, liquidation, tpsl_updated, leverage updates, SL/TP triggered) with realized PnL, tx hashes (cosmos + evm), and block timestamps. This is the per-event audit log and the best way to confirm a write landed (match on the broadcast's evmTxHash). Like sai_get_trader_trades it reads indexed state, so a just-broadcast event may take a few seconds to ~1-2 minutes to appear.",
   getTraderHistorySchema,
   getTraderHistory,
 );
@@ -246,6 +254,27 @@ register(
   "Open a long or short perpetual position on Sai using USDC collateral. Defaults to a DRY RUN that simulates and gas-estimates the trade without broadcasting — set confirm=true to actually send the transaction. The signer is loaded from SAI_MNEMONIC or SAI_PRIVATE_KEY on the MCP server. Always preview with confirm=false (or omit it) and show the summary to the user before re-running with confirm=true.",
   openTradeSchema,
   openTrade,
+);
+
+register(
+  "sai_close_trade",
+  "Close an open Sai perpetual position, or cancel a pending limit/stop order (same on-chain call — the contract distinguishes by the trade's state). Identify the trade by its per-user index (the `id` from sai_get_trader_trades). Defaults to a DRY RUN that simulates and gas-estimates without broadcasting — set confirm=true to actually send. The signer is loaded from SAI_MNEMONIC or SAI_PRIVATE_KEY; only the signer's own trades can be managed.",
+  closeTradeSchema,
+  closeTrade,
+);
+
+register(
+  "sai_update_tpsl",
+  "Set or clear the take-profit and/or stop-loss on an open Sai position. Omit a field to leave it unchanged, pass a price to set it, or pass null to clear it. Validates that newly-set targets are on the correct side of the live price. Identify the trade by its `id` from sai_get_trader_trades. Defaults to a DRY RUN — set confirm=true to broadcast. Signer from SAI_MNEMONIC or SAI_PRIVATE_KEY.",
+  updateTpSlSchema,
+  updateTpSl,
+);
+
+register(
+  "sai_update_leverage",
+  "Change the leverage on an open Sai position (USDC collateral only). Notional is held constant: raising leverage frees collateral back to the wallet, lowering it pulls additional USDC from the wallet. newLeverage must be a whole number within the market's min/max. Identify the trade by its `id` from sai_get_trader_trades. Defaults to a DRY RUN — set confirm=true to broadcast. Signer from SAI_MNEMONIC or SAI_PRIVATE_KEY.",
+  updateLeverageSchema,
+  updateLeverage,
 );
 
 async function main() {
