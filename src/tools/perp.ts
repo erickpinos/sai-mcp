@@ -21,6 +21,8 @@ export async function listMarkets(args: {
   limit: number;
 }) {
   // `borrowings` returns the short shape — for full market details use sai_get_market.
+  // `tradingSchedule` is non-null for scheduled markets (US stocks, commodities)
+  // and null for 24/7 crypto markets; `isOpen` reflects the live tradeable state.
   const query = `
     query Markets($limit: Int) {
       perp {
@@ -31,6 +33,7 @@ export async function listMarkets(args: {
           collateralToken { id symbol name }
           visible
           isOpen
+          tradingSchedule { name timezone }
         }
       }
     }
@@ -45,7 +48,12 @@ export async function listMarkets(args: {
 
 export const getMarketSchema = {
   network: NetworkSchema,
-  marketId: z.number().int().describe("Market ID (e.g. 0 for BTC, 1 for ETH, 16 for SOL)."),
+  marketId: z
+    .number()
+    .int()
+    .describe(
+      "Market ID. Crypto markets are low IDs (0 = BTC, 1 = ETH, 16 = SOL); US-stock markets are 1000+ (e.g. 1000 = QQQ, 1001 = SPY, 1002 = NVDA). Call sai_list_markets to enumerate all (100+) markets.",
+    ),
   collateralId: z
     .number()
     .int()
@@ -89,6 +97,15 @@ export async function getMarket(args: {
           priceImpactExponent
           visible
           isOpen
+          tradingSchedule {
+            name
+            timezone
+            startDayOfWeek
+            startTimeOfDay
+            closeDayOfWeek
+            closeTimeOfDay
+            holidays
+          }
         }
       }
     }
@@ -199,6 +216,8 @@ export async function getTraderHistory(args: {
           realizedPnlCollateral
           realizedPnlPct
           collateralPrice
+          openingFeeUsd
+          closingFeeUsd
           txHash
           evmTxHash
           block { block block_ts }

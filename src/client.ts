@@ -3,10 +3,45 @@ const ENDPOINTS = {
   testnet: "https://sai-keeper.testnet-2.nibiru.fi/query",
 } as const;
 
+// REST stats ("dexpal") API — exchange-wide aggregates (volume, OI, TVL, fees,
+// users) and yield opportunities. Served by the keeper's `-api` process on a
+// different host than the GraphQL endpoint, so it has its own base URL.
+const REST_ENDPOINTS = {
+  mainnet: "https://sai-api.nibiru.fi",
+  testnet: "https://sai-api.testnet-2.nibiru.fi",
+} as const;
+
+// TradingView UDF candle (OHLCV) API — served by the keeper's candles process.
+const CANDLES_ENDPOINTS = {
+  mainnet: "https://sai-candles.nibiru.fi",
+  testnet: "https://sai-candles.testnet-2.nibiru.fi",
+} as const;
+
 export type Network = keyof typeof ENDPOINTS;
 
 export function getEndpoint(network: Network = "mainnet"): string {
   return process.env.SAI_KEEPER_ENDPOINT ?? ENDPOINTS[network];
+}
+
+export function getRestEndpoint(network: Network = "mainnet"): string {
+  return process.env.SAI_API_ENDPOINT ?? REST_ENDPOINTS[network];
+}
+
+export function getCandlesEndpoint(network: Network = "mainnet"): string {
+  return process.env.SAI_CANDLES_ENDPOINT ?? CANDLES_ENDPOINTS[network];
+}
+
+export async function restRequest<T = unknown>(
+  path: string,
+  network: Network = "mainnet",
+  base: string = getRestEndpoint(network),
+): Promise<T> {
+  const url = `${base}${path}`;
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) {
+    throw new Error(`sai REST HTTP ${res.status} (${url}): ${await res.text()}`);
+  }
+  return (await res.json()) as T;
 }
 
 export interface GraphQLError {

@@ -5,9 +5,12 @@ An [MCP](https://modelcontextprotocol.io) server for **[Sai.fun](https://sai.fun
 ## What you can ask
 
 - "What perp markets does Sai have right now and what's their funding rate?"
+- "Is the SPY market open, and what are its trading hours?"
 - "Show me open positions for trader `nibi1abc...` with current PnL"
 - "What's the TVL and APY of the USDC vault?"
 - "How much fees has the Sai protocol collected this week?"
+- "Who's on top of the PnL leaderboard?"
+- "Plot BTC's last 24 hours of hourly candles"
 - "Did `nibi1xyz...` get liquidated in the last 24 hours?"
 
 ## Install
@@ -90,12 +93,14 @@ All tools accept an optional `network` argument (`"mainnet"` | `"testnet"`, defa
 
 | Tool | Purpose |
 |------|---------|
-| `sai_list_markets` | All perp markets (marketId, base/quote/collateral tokens, visibility) |
-| `sai_get_market` | Full info for one market by `marketId` + `collateralId` (price, OI, funding, fees, price impact) |
+| `sai_list_markets` | All perp markets (100+: crypto + US stocks) — marketId, base/quote/collateral tokens, visibility, `isOpen`, and `tradingSchedule` name/timezone |
+| `sai_get_market` | Full info for one market by `marketId` + `collateralId` (price, OI, funding, fees, price impact, `isOpen`, and full `tradingSchedule` for stock/commodity markets) |
 | `sai_get_trader_trades` | A trader's open/closed positions with real-time PnL, liq price, fees |
-| `sai_get_trader_history` | A trader's position events (open, close, liquidate, SL/TP) with tx hashes |
+| `sai_get_trader_history` | A trader's position events (open, close, liquidate, SL/TP) with realized PnL, opening/closing fees (USD), and tx hashes |
 | `sai_get_user_portfolio` | A trader's portfolio stats (realized PnL, volume, trade count) over a range |
 | `sai_get_fee_tier_progress` | A trader's fee tier, multiplier, and progress to next tier |
+| `sai_get_leaderboard` | PnL / volume / volume-marathon / cookout leaderboards with rank, rewards, and trader stats |
+| `sai_get_candles` | OHLCV candles for a market by base symbol at a chosen resolution (1m–1M) |
 
 ### Liquidity vaults
 
@@ -113,13 +118,31 @@ All tools accept an optional `network` argument (`"mainnet"` | `"testnet"`, defa
 | `sai_get_token_prices` | Current USD oracle prices |
 | `sai_list_tokens` | All tokens known to the Sai oracle |
 
+### Referrals
+
+| Tool | Purpose |
+|------|---------|
+| `sai_get_referrals` | A referrer's codes, attributed trades, claims, and earnings/volume time series |
+| `sai_get_referral_for_trader` | Which referral code (and referrer) a trader redeemed, if any |
+
+### Protocol stats & yield
+
+These hit the keeper's REST ("dexpal") API rather than GraphQL.
+
+| Tool | Purpose |
+|------|---------|
+| `sai_get_protocol_stats` | Exchange-wide aggregates: volume (24h/7d/30d/all-time), trades, open interest, users, open positions, TVL, accrued fees |
+| `sai_get_yield_opportunities` | LP vault yield opportunities (accepted deposits, APY/APR, TVL) |
+
 ### Escape hatch
 
 | Tool | Purpose |
 |------|---------|
-| `sai_graphql_query` | Run an arbitrary GraphQL query — for referrals, leaderboards, or any field not covered above |
+| `sai_graphql_query` | Run an arbitrary GraphQL query — for any field not covered above |
 
 Use the escape hatch when the typed tools don't cover what you need. See the live schema at <https://sai-keeper.nibiru.fi/>.
+
+> **Known gap:** per-wallet balance/net-worth snapshots (`UserInfo`: `netWorthUSD`, per-token USD value, pending PnL) are exposed by the keeper only as a GraphQL **subscription**, with no query equivalent — so a request/response MCP can't surface them yet. Use `sai_get_user_portfolio` (PnL/volume) and `sai_get_wallet_info` (on-chain balances of the configured signer) in the meantime.
 
 ### Write tools (opt-in, require a signer)
 
@@ -140,20 +163,30 @@ The trade is executed via the `PerpVaultEvmInterface` contract on Nibiru's EVM. 
 - **Addresses**: trader and depositor addresses are Nibiru bech32 (`nibi1...`).
 - **Timestamps**: `block_ts` is RFC3339; `epochStart` is in the chain's native time encoding.
 - **Funding rate APR**: `feesPerHourLong * 24 * 365 * 100`.
-- **Market IDs** (mainnet): 0 = BTC, 1 = ETH, 16 = SOL, plus others. Collateral IDs: 1 = USDC, 2 = stNIBI. Each (market, collateral) pair is a distinct market — `sai_list_markets` enumerates them all.
+- **Market IDs** (mainnet): Sai lists 100+ markets. Crypto uses low IDs (0 = BTC, 1 = ETH, 16 = SOL); US-stock markets use IDs 1000+ (1000 = QQQ, 1001 = SPY, 1002 = NVDA, …). Collateral IDs: 1 = USDC, 2 = stNIBI. Each (market, collateral) pair is a distinct market — `sai_list_markets` enumerates them all.
+- **Trading schedules**: crypto markets trade 24/7 (`tradingSchedule` is null). US-stock/commodity markets carry a `tradingSchedule` (e.g. 09:30–16:00 `America/New_York`, with a `holidays` list) and `isOpen` reflects whether they're currently tradeable. `sai_open_trade` rejects a closed market and reports its hours.
 
 ## Configuration
 
-Override the GraphQL endpoint with an env var (handy for self-hosted indexers):
+Override any of the three backend endpoints with env vars (handy for self-hosted indexers):
 
 ```bash
-SAI_KEEPER_ENDPOINT="https://your-indexer.example.com/graphql" npx sai-mcp
+SAI_KEEPER_ENDPOINT="https://your-indexer.example.com/query" \
+SAI_API_ENDPOINT="https://your-stats-api.example.com" \
+SAI_CANDLES_ENDPOINT="https://your-candles.example.com" \
+  npx sai-mcp
 ```
+
+- `SAI_KEEPER_ENDPOINT` — GraphQL indexer (most tools).
+- `SAI_API_ENDPOINT` — REST stats/dexpal API host (`sai_get_protocol_stats`, `sai_get_yield_opportunities`).
+- `SAI_CANDLES_ENDPOINT` — candles (TradingView UDF) API host (`sai_get_candles`).
 
 Default endpoints:
 
-- Mainnet: `https://sai-keeper.nibiru.fi/query`
-- Testnet: `https://sai-keeper.testnet-2.nibiru.fi/query`
+| | GraphQL | REST stats | Candles |
+|---|---|---|---|
+| **Mainnet** | `https://sai-keeper.nibiru.fi/query` | `https://sai-api.nibiru.fi` | `https://sai-candles.nibiru.fi` |
+| **Testnet** | `https://sai-keeper.testnet-2.nibiru.fi/query` | `https://sai-api.testnet-2.nibiru.fi` | `https://sai-candles.testnet-2.nibiru.fi` |
 
 ### Signer setup
 

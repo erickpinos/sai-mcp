@@ -89,6 +89,14 @@ type OpenTradeArgs = {
   confirm: boolean;
 };
 
+type TradingSchedule = {
+  name: string;
+  timezone: string;
+  startTimeOfDay: string;
+  closeTimeOfDay: string;
+  holidays: (string | null)[];
+};
+
 type Borrowing = {
   isOpen: boolean;
   marketId: number;
@@ -98,6 +106,7 @@ type Borrowing = {
   minPositionSizeUSD: number;
   baseToken: { symbol: string | null; name: string };
   quoteToken: { symbol: string | null; name: string };
+  tradingSchedule: TradingSchedule | null;
 };
 
 async function fetchBorrowing(
@@ -114,6 +123,9 @@ async function fetchBorrowing(
           isOpen marketId price minLeverage maxLeverage minPositionSizeUSD
           baseToken { symbol name }
           quoteToken { symbol name }
+          tradingSchedule {
+            name timezone startTimeOfDay closeTimeOfDay holidays
+          }
         }
       }
     }`,
@@ -142,7 +154,11 @@ export async function openTrade(args: OpenTradeArgs) {
   // --- market info ---
   const borrowing = await fetchBorrowing(args.network, args.marketId, cfg.usdcTokenIndex);
   if (!borrowing.isOpen) {
-    throw new Error(`Market ${args.marketId} is currently closed`);
+    const sch = borrowing.tradingSchedule;
+    const scheduleNote = sch
+      ? ` This is a scheduled market (${sch.name}); trading hours are ${sch.startTimeOfDay}–${sch.closeTimeOfDay} ${sch.timezone}, closed on weekends and holidays.`
+      : "";
+    throw new Error(`Market ${args.marketId} is currently closed.${scheduleNote}`);
   }
   if (!(borrowing.price > 0)) {
     throw new Error(

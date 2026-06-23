@@ -32,6 +32,20 @@ import {
   listTokens,
   listTokensSchema,
 } from "./tools/oracle.js";
+import {
+  getReferrals,
+  getReferralsSchema,
+  getReferralForTrader,
+  getReferralForTraderSchema,
+} from "./tools/referral.js";
+import { getLeaderboard, getLeaderboardSchema } from "./tools/leaderboard.js";
+import {
+  getProtocolStats,
+  getProtocolStatsSchema,
+  getYieldOpportunities,
+  getYieldOpportunitiesSchema,
+} from "./tools/stats.js";
+import { getCandles, getCandlesSchema } from "./tools/candles.js";
 import { rawQuery, rawQuerySchema } from "./tools/raw.js";
 import { getWalletInfo, getWalletInfoSchema } from "./tools/wallet.js";
 import { openTrade, openTradeSchema } from "./tools/trade.js";
@@ -81,14 +95,14 @@ function register<S extends AnyShape>(
 // Perp — markets and trading
 register(
   "sai_list_markets",
-  "List Sai perpetual markets (marketId, base/quote/collateral tokens, visibility). For full per-market details (price, OI, funding, fees) call sai_get_market with the marketId.",
+  "List Sai perpetual markets (100+, marketId, base/quote/collateral tokens, visibility, isOpen, and tradingSchedule name/timezone for scheduled markets). Covers crypto (low IDs: 0=BTC, 1=ETH, 16=SOL) and US stocks (IDs 1000+: 1000=QQQ, 1001=SPY, 1002=NVDA, ...). For full per-market details (price, OI, funding, fees, full schedule) call sai_get_market with the marketId.",
   listMarketsSchema,
   listMarkets,
 );
 
 register(
   "sai_get_market",
-  "Get a single perpetual market's full info: price, 24h change, volume, open interest, funding rates, leverage caps, fees, and price impact parameters.",
+  "Get a single perpetual market's full info: price, 24h change, volume, open interest, funding rates, leverage caps, fees, price impact parameters, isOpen, and (for US-stock/commodity markets) the tradingSchedule with hours, timezone, and holidays.",
   getMarketSchema,
   getMarket,
 );
@@ -163,6 +177,52 @@ register(
   "List all tokens known to the Sai oracle (id, symbol, name, description, type).",
   listTokensSchema,
   listTokens,
+);
+
+// Referrals
+register(
+  "sai_get_referrals",
+  "Get a referrer's program data: their referral codes (with unique traders, earnings, volume), recent attributed trades, claim events, and an earnings/volume time series over a range.",
+  getReferralsSchema,
+  getReferrals,
+);
+
+register(
+  "sai_get_referral_for_trader",
+  "Look up which referral code (and referrer) a given trader redeemed, if any. Returns empty when the trader has not redeemed a code.",
+  getReferralForTraderSchema,
+  getReferralForTrader,
+);
+
+// Leaderboards
+register(
+  "sai_get_leaderboard",
+  "Get a Sai leaderboard: 'pnl' (realized PnL, ROI, capital used + rewards), 'volume' and 'volumeMarathon' (volume races), or 'cookout' (event leaderboard). Each row includes trader address and reward.",
+  getLeaderboardSchema,
+  getLeaderboard,
+);
+
+// Protocol-wide stats and yield (keeper REST / dexpal API)
+register(
+  "sai_get_protocol_stats",
+  "Get exchange-wide aggregate stats (USD): trading volume (24h/7d/30d/all-time), trade counts, open interest, unique users, open positions, TVL, and accrued trading fees. Answers protocol-level questions like total fees collected this week. Served by the keeper REST API, not GraphQL.",
+  getProtocolStatsSchema,
+  getProtocolStats,
+);
+
+register(
+  "sai_get_yield_opportunities",
+  "List Sai yield/earning opportunities (LP vaults) with accepted deposits, APY/APR, and TVL. Served by the keeper REST API.",
+  getYieldOpportunitiesSchema,
+  getYieldOpportunities,
+);
+
+// Candles (OHLCV)
+register(
+  "sai_get_candles",
+  "Get OHLCV candles for a market by base symbol (e.g. BTC, ETH, NVDA) at a resolution (1/5/15/60/240/360/720 minutes, or 1D/1W/1M). Provide an explicit from/to Unix-second range, or a countback for the most recent N bars. Served by the keeper candles (TradingView UDF) API.",
+  getCandlesSchema,
+  getCandles,
 );
 
 // Escape hatch
