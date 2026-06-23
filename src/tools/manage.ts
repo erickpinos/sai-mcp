@@ -35,6 +35,7 @@ type ManagedTrade = {
   tp: number | null;
   sl: number | null;
   tradeType: "trade" | "limit" | "stop";
+  openBlock: { block: number; block_ts: string } | null;
   perpBorrowing: {
     marketId: number;
     price: number;
@@ -61,6 +62,7 @@ async function fetchTrade(
       perp {
         trade(id: $id, trader: $trader) {
           id isOpen isLong leverage collateralAmount openPrice tp sl tradeType
+          openBlock { block block_ts }
           perpBorrowing {
             marketId isOpen
             baseToken { symbol name }
@@ -134,6 +136,43 @@ function marketSymbol(t: ManagedTrade): string {
   return `${b.symbol ?? b.name}/${q.symbol ?? q.name}`;
 }
 
+// --- freshly-opened-position guard -----------------------------------------
+//
+// Acting on a position within ~2 minutes of opening can revert ON-CHAIN even
+// though estimateGas returns a clean estimate with no error. The contract's
+// funtoken-precompile path appears to enforce a brief minimum-hold / same-block
+// guard that eth_estimateGas does not simulate. So a clean dry-run is NOT a
+// guarantee an immediate close/update lands. (Observed: open then close ~8s
+// later reverted with an undecodable CALL_EXCEPTION; the same close ~2 min later
+// succeeded.) We surface this as an advisory in the dry-run summary, and (if a
+// real broadcast reverts) translate the opaque revert into an actionable
+// "wait and retry" hint rather than leaking the raw precompile error.
+const RECENT_OPEN_SECONDS = 120;
+
+function positionAgeSeconds(trade: ManagedTrade): number | null {
+  const ts = trade.openBlock?.block_ts;
+  if (!ts) return null;
+  const openedMs = Date.parse(ts);
+  if (Number.isNaN(openedMs)) return null;
+  return Math.max(0, Math.round(Date.now() / 1000 - openedMs / 1000));
+}
+
+// Advisory shown in the dry-run summary when the position was opened recently.
+function recentOpenAdvisory(
+  ageSec: number | null,
+  verb: "close" | "modify",
+): string | undefined {
+  if (ageSec === null || ageSec >= RECENT_OPEN_SECONDS) return undefined;
+  return `This position was opened ~${ageSec}s ago. Acting on a position within ~1-2 minutes of opening can revert on-chain even when this gas estimate succeeds (the contract appears to enforce a brief minimum hold). If the ${verb} broadcast reverts, wait ~1-2 minutes and retry. This tool does not auto-wait.`;
+}
+
+// Hint appended to a broadcast-revert error, tailored by how fresh the position is.
+function revertRetryHint(ageSec: number | null): string {
+  return ageSec !== null && ageSec < RECENT_OPEN_SECONDS
+    ? `The position was opened ~${ageSec}s ago; actions within ~1-2 min of opening commonly revert here even after a clean gas estimate. Wait ~1-2 minutes and retry.`
+    : "If you just opened or modified this position its state may still be settling; wait a moment and retry. It may also already be closed/settled.";
+}
+
 // --- shared simulate / broadcast -------------------------------------------
 
 type Simulated = {
@@ -171,18 +210,35 @@ async function simulate(
 async function broadcast(
   txPromise: Promise<ethers.ContractTransactionResponse>,
   cfg: ChainCfg,
+  // Appended to the error when the broadcast reverts on-chain. estimateGas can
+  // pass for a tx that then reverts (notably right after opening, see
+  // revertRetryHint), so callers pass a context-specific retry hint here.
+  revertHint?: string,
 ) {
   const tx = await txPromise;
-  const receipt = await tx.wait();
-  return {
-    status: receipt?.status === 1 ? "success" : "reverted",
-    tx: {
-      hash: tx.hash,
-      explorer: cfg.explorerTx(tx.hash),
-      blockNumber: receipt?.blockNumber,
-      gasUsed: receipt?.gasUsed?.toString(),
-    },
-  };
+  try {
+    const receipt = await tx.wait();
+    return {
+      status: receipt?.status === 1 ? "success" : "reverted",
+      tx: {
+        hash: tx.hash,
+        explorer: cfg.explorerTx(tx.hash),
+        blockNumber: receipt?.blockNumber,
+        gasUsed: receipt?.gasUsed?.toString(),
+      },
+    };
+  } catch (e) {
+    // ethers throws CALL_EXCEPTION when a tx reverts during execution. The
+    // funtoken-precompile path returns no decodable reason, so translate the
+    // opaque blob into an actionable message that keeps the tx hash visible.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/missing revert data|CALL_EXCEPTION|execution reverted/i.test(msg)) {
+      throw new Error(
+        `Broadcast reverted on-chain (tx ${tx.hash}, ${cfg.explorerTx(tx.hash)}). This contract's funtoken-precompile path returns no decodable revert reason.${revertHint ? " " + revertHint : ""} Confirm the trade's true state via sai_get_trader_history before retrying.`,
+      );
+    }
+    throw e;
+  }
 }
 
 function gasSummary(sim: Simulated) {
@@ -251,6 +307,12 @@ export async function closeTrade(args: {
   const isPendingOrder = trade.tradeType !== "trade";
   const action = isPendingOrder ? "cancel-order" : "close-position";
 
+  // A market position only has the minimum-hold revert risk; a pending order is
+  // cancellable immediately, so only advise/hint for real positions.
+  const ageSec = isPendingOrder ? null : positionAgeSeconds(trade);
+  const advisory = recentOpenAdvisory(ageSec, "close");
+  const revertHint = revertRetryHint(ageSec);
+
   // close_trade also cancels a pending order — the contract distinguishes by the
   // trade's own state, so the message is identical.
   const wasmMsg = {
@@ -286,6 +348,7 @@ export async function closeTrade(args: {
     return {
       ...summary,
       ...(simulationNote ? { simulationNote } : {}),
+      ...(advisory ? { warning: advisory } : {}),
       status: "dry-run",
       note: `No transaction sent. Pass confirm=true to ${isPendingOrder ? "cancel this order" : "close this position"}.`,
     };
@@ -303,6 +366,7 @@ export async function closeTrade(args: {
         gasPrice: 0n,
       }),
       cfg,
+      revertHint,
     )),
   };
 }
@@ -359,6 +423,10 @@ export async function updateTpSl(args: {
   if (!trade.isOpen) {
     throw new Error(`Trade ${args.tradeIndex} is closed; nothing to update.`);
   }
+
+  const ageSec = positionAgeSeconds(trade);
+  const advisory = recentOpenAdvisory(ageSec, "modify");
+  const revertHint = revertRetryHint(ageSec);
 
   // Direction sanity for newly-set targets, mirroring sai_open_trade: a TP/SL on
   // the wrong side of the live price triggers immediately. Skipped when clearing
@@ -435,6 +503,7 @@ export async function updateTpSl(args: {
     return {
       ...summary,
       ...(simulationNote ? { simulationNote } : {}),
+      ...(advisory ? { warning: advisory } : {}),
       status: "dry-run",
       note: "No transaction sent. Pass confirm=true to apply.",
     };
@@ -452,6 +521,7 @@ export async function updateTpSl(args: {
         gasPrice: 0n,
       }),
       cfg,
+      revertHint,
     )),
   };
 }
@@ -496,6 +566,10 @@ export async function updateLeverage(args: {
       `Trade ${args.tradeIndex} is a pending ${trade.tradeType} order, not an open position; leverage cannot be adjusted.`,
     );
   }
+
+  const ageSec = positionAgeSeconds(trade);
+  const advisory = recentOpenAdvisory(ageSec, "modify");
+  const revertHint = revertRetryHint(ageSec);
 
   const collateralIndex = trade.perpBorrowing.collateralToken.id;
   if (collateralIndex !== cfg.usdcTokenIndex) {
@@ -591,6 +665,7 @@ export async function updateLeverage(args: {
     return {
       ...summary,
       ...(simulationNote ? { simulationNote } : {}),
+      ...(advisory ? { warning: advisory } : {}),
       status: "dry-run",
       note: "No transaction sent. Pass confirm=true to apply.",
     };
@@ -612,6 +687,7 @@ export async function updateLeverage(args: {
         { gasLimit: sim.gasLimit, gasPrice: 0n },
       ),
       cfg,
+      revertHint,
     )),
   };
 }

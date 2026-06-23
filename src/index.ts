@@ -258,7 +258,7 @@ register(
 
 register(
   "sai_close_trade",
-  "Close an open Sai perpetual position, or cancel a pending limit/stop order (same on-chain call — the contract distinguishes by the trade's state). Identify the trade by its per-user index (the `id` from sai_get_trader_trades). Defaults to a DRY RUN that simulates and gas-estimates without broadcasting — set confirm=true to actually send. The signer is loaded from SAI_MNEMONIC or SAI_PRIVATE_KEY; only the signer's own trades can be managed.",
+  "Close an open Sai perpetual position, or cancel a pending limit/stop order (same on-chain call — the contract distinguishes by the trade's state). Identify the trade by its per-user index (the `id` from sai_get_trader_trades). Defaults to a DRY RUN that simulates and gas-estimates without broadcasting — set confirm=true to actually send. The signer is loaded from SAI_MNEMONIC or SAI_PRIVATE_KEY; only the signer's own trades can be managed. Caveat: closing a position within ~1-2 minutes of opening it can revert on-chain even when the dry-run gas estimate succeeds (the contract enforces a brief minimum hold); if a confirmed close reverts, wait ~1-2 minutes and retry. The dry-run flags a freshly-opened position under `warning`.",
   closeTradeSchema,
   closeTrade,
 );
