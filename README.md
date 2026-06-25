@@ -89,6 +89,8 @@ In `~/.cursor/mcp.json`:
 
 All tools accept an optional `network` argument (`"mainnet"` | `"testnet"`, default `mainnet`).
 
+Every tool carries MCP **annotations**: the 20 read tools are marked `readOnlyHint`, the 4 on-chain write tools `destructiveHint`, and each tool gets a human `title`, so clients can tell them apart. Every tool also returns **structured output**: the read tools wrap their payload under a `result` field, while the write tools and `sai_get_wallet_info` advertise a typed `outputSchema`. The server also ships an `instructions` block (units, market IDs, the dry-run safety model) in its initialize response, so a connected model has the conventions without being told.
+
 ### Markets & trading
 
 | Tool | Purpose |
@@ -158,11 +160,33 @@ These tools sign and broadcast on-chain transactions. They are inert unless you 
 
 All four write tools identify a position by its per-user trade index — the `id` field returned by `sai_get_trader_trades`. You can only manage the configured signer's own trades.
 
-**Safety model.** Every write tool defaults to `confirm: false`, which simulates the action (gas estimate + validation against market/position constraints) without signing or broadcasting. The returned summary includes the resolved position, the change being made, the wallet, and the encoded wasm message. Set `confirm: true` only after reviewing the dry-run output. The MCP server refuses to broadcast if gas estimation fails. Operators can further constrain trades with env-based caps — see [Trade guard rails](#trade-guard-rails-operator-set-caps).
+**Safety model.** Every write tool defaults to `confirm: false`, which simulates the action (gas estimate + validation against market/position constraints) without signing or broadcasting. The returned summary includes the resolved position, the change being made, the wallet, and the encoded wasm message. Set `confirm: true` only after reviewing the dry-run output. `sai_close_trade`, `sai_update_tpsl`, and `sai_update_leverage` refuse to broadcast if gas estimation fails; `sai_open_trade` instead falls back to a fixed gas limit and broadcasts anyway (flagged via `broadcastWithFallbackGas`), because `eth_estimateGas` is unreliable for the funtoken-precompile open path. Operators can further constrain trades with env-based caps — see [Trade guard rails](#trade-guard-rails-operator-set-caps).
 
 **Freshly-opened positions can revert on close/update.** Gas estimation does not catch one timing case: acting on a position within ~1–2 minutes of opening it can revert on-chain even when the dry-run gas estimate succeeds, because the contract enforces a brief minimum hold that `eth_estimateGas` does not simulate. So a clean dry-run is not a guarantee an immediate close/update lands. The dry-run flags a freshly-opened position under a `warning` field; and if a confirmed `sai_close_trade` / `sai_update_tpsl` / `sai_update_leverage` reverts, the tool returns the tx hash, explorer link, and a "wait ~1–2 minutes and retry" hint instead of an opaque `CALL_EXCEPTION`. Confirm a trade's true state via `sai_get_trader_history` (look for the `position_closed` / `tpsl_updated` event) rather than the eventually-consistent `sai_get_trader_trades`.
 
 The trade is executed via the `PerpVaultEvmInterface` contract on Nibiru's EVM. Gas is sponsored by the chain when targeting this contract, so the wallet does not need NIBI for gas — only USDC for collateral. No ERC20 approve is required; the contract pulls USDC directly via the Nibiru funtoken precompile.
+
+## Resources
+
+The server exposes read-only [MCP resources](https://modelcontextprotocol.io) a client can pull into context without spending a tool call. All are mainnet snapshots (use the tools for testnet):
+
+| URI | Type | Contents |
+|-----|------|----------|
+| `sai://guide` | `text/markdown` | Protocol conventions and the write-tool safety model |
+| `sai://markets` | `application/json` | Live list of visible mainnet markets (same payload as `sai_list_markets`) |
+| `sai://tokens` | `application/json` | Live mainnet oracle tokens (same as `sai_list_tokens`) |
+| `sai://schema` | `text/markdown` | GraphQL query roots and fields, derived from live introspection, for the `sai_graphql_query` escape hatch |
+
+## Prompts
+
+Reusable analysis templates that surface like slash commands in MCP clients. Each expands into a guided request that drives the relevant tools (the prompt itself runs no tools):
+
+| Prompt | Arguments | Purpose |
+|--------|-----------|---------|
+| `analyze_trader` | `trader` (required), `network` | Pull a trader's positions, history, portfolio, and fee tier; summarize exposure, PnL, and risk |
+| `market_overview` | `network` | Which markets are open, top volume/OI, notable funding rates, biggest movers |
+| `vault_yield_report` | `network` | Vault TVL, share price, APY, and best yield opportunities |
+| `protocol_health` | `network` | Exchange-wide volume, open interest, TVL, users, and fees |
 
 ## Units & conventions
 
@@ -194,6 +218,35 @@ Default endpoints:
 |---|---|---|---|
 | **Mainnet** | `https://sai-keeper.nibiru.fi/query` | `https://sai-api.nibiru.fi` | `https://sai-candles.nibiru.fi` |
 | **Testnet** | `https://sai-keeper.testnet-2.nibiru.fi/query` | `https://sai-api.testnet-2.nibiru.fi` | `https://sai-candles.testnet-2.nibiru.fi` |
+
+### Remote access (HTTP transport)
+
+By default the server speaks MCP over **stdio** (the client spawns it as a local subprocess). To run it as a long-lived **Streamable HTTP** server instead, set `SAI_HTTP_PORT` (or pass `--http [port]`):
+
+```bash
+SAI_HTTP_PORT=3000 npx sai-mcp      # or: npm run start:http
+```
+
+Leave it running, then point a client at the URL:
+
+```bash
+claude mcp add --transport http sai http://127.0.0.1:3000/
+```
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `SAI_HTTP_PORT` | unset (= stdio) | Port to serve Streamable HTTP on. Also enabled by `--http`. |
+| `SAI_HTTP_HOST` | `127.0.0.1` | Bind address |
+| `SAI_HTTP_TOKEN` | unset | Bearer token required on every request when a signer is configured |
+| `SAI_HTTP_ALLOWED_HOSTS` | loopback only | Extra `host:port` values (comma-separated) the DNS-rebinding guard accepts, for a non-local bind |
+
+**Security.** The server binds to `127.0.0.1` and enables DNS-rebinding protection. Because the write tools sign with the configured wallet's key, an open HTTP port lets anyone who can reach it trade with that wallet, so:
+
+- With a signer (`SAI_MNEMONIC` / `SAI_PRIVATE_KEY`) **and** `SAI_HTTP_TOKEN` set, every request must carry `Authorization: Bearer <token>` or it gets `401`.
+- With a signer but **no** token, the server still serves the write tools and prints a loud startup warning. Set a token, or drop the signer to run read-only over HTTP.
+- Exposing beyond localhost is not recommended. The allowed-host list defaults to loopback, so a non-local bind (e.g. `SAI_HTTP_HOST=0.0.0.0`) must add its public `host:port` to `SAI_HTTP_ALLOWED_HOSTS` or every remote request is rejected with `403`. Do this only behind a bearer token and a TLS-terminating proxy.
+
+Sessions are stateful (the server issues an `Mcp-Session-Id` on initialize); the read-only tools and resources also work over HTTP with no signer and no token.
 
 ### Signer setup
 
