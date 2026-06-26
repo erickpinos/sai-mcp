@@ -33,7 +33,7 @@ export const walletInfoOutputSchema = {
     .any()
     .optional()
     .describe(
-      "nibi { evmNative, bankUnibi } and usdc { erc20, bank, contract, decimals } — human units.",
+      "nibi { evmNative, bankUnibi } and usdc { erc20, bank, contract, decimals }, human units. NIBI is NOT needed to trade (Sai perp trades are gas-sponsored); it is used only for sai_send withdrawals/transfers, so do not treat a low or zero NIBI balance as blocking a trade. USDC is the collateral that funds trades.",
     ),
   chain: z.any().optional().describe("evmRpc, cosmosRest, evmInterface."),
   signerSource: z
@@ -94,4 +94,23 @@ export const manageTradeOutputSchema = {
   note: z.string().optional(),
   warning: z.string().optional().describe("Freshly-opened-position advisory (revert risk within ~1-2 min)."),
   simulationNote: z.string().optional().describe("Interpreted on-chain simulation error, if any."),
+};
+
+// sai_send — plain USDC/NIBI transfer out of the signer wallet.
+export const sendOutputSchema = {
+  status: z.string().optional().describe("dry-run | success | reverted."),
+  network: z.string().optional(),
+  action: z.string().optional().describe("Always 'send'."),
+  token: z.string().optional().describe("Token symbol/label: NIBI, USDC, or an ERC20's symbol."),
+  tokenContract: z.string().optional().describe("ERC20 contract address (absent for native NIBI)."),
+  to: z.string().optional().describe("Resolved 0x recipient address."),
+  toBech32: z.string().optional().describe("Original nibi1... recipient, if one was given."),
+  amount: z.string().optional().describe("Human-unit amount sent (full balance when sweepAll)."),
+  decimals: z.number().optional().describe("Decimals of the sent asset."),
+  sweepAll: z.boolean().optional().describe("True when emptying the full token balance."),
+  wallet: z.any().optional().describe("evmAddress, bech32Address, balanceBefore, nonce, chainId."),
+  gas: z.any().optional().describe("limit, gasPrice, estimatedCostNibi, funded — transfers are NOT sponsored."),
+  tx: z.any().optional().describe("Present only when broadcast: hash, explorer URL, blockNumber, gasUsed."),
+  warning: z.string().optional().describe("Surfaced when the wallet lacks NIBI to cover gas."),
+  note: z.string().optional(),
 };

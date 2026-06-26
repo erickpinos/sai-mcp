@@ -317,14 +317,19 @@ export async function openTrade(args: OpenTradeArgs) {
     };
   }
 
-  // Gas estimation is unreliable for this contract: PerpVaultEvmInterface pulls
-  // USDC via the Nibiru funtoken precompile, which eth_estimateGas frequently
-  // cannot simulate, so a failed estimate does NOT mean the trade would revert.
-  // Mirror the webapp (estimateGasWithFallback in sai-website): on estimation
-  // failure, fall back to the fixed gas limit (already computed above) and
-  // broadcast anyway. The estimationError stays visible in `summary.gas` and is
-  // flagged via `broadcastWithFallbackGas` so the caller knows it was sent
-  // without a validated estimate.
+  // Gas estimation CAN be unreliable for this contract: PerpVaultEvmInterface
+  // pulls USDC via the Nibiru funtoken precompile, whose estimateGas path can
+  // fail to simulate under some states, so a failed estimate does not always
+  // mean the trade would revert. (Caveat: in mainnet testing 2026-06-26 the
+  // estimate was actually accurate for valid opens and only threw the
+  // undecodable "missing revert data" for a genuinely-doomed over-balance open,
+  // so the failure mode we reproduced was a real revert. We keep the fallback
+  // as a cheap safety net rather than relying on it being common.) Mirror the
+  // webapp (estimateGasWithFallback in sai-website): on estimation failure, fall
+  // back to the fixed gas limit (already computed above) and broadcast anyway.
+  // The estimationError stays visible in `summary.gas` and is flagged via
+  // `broadcastWithFallbackGas` so the caller knows it was sent without a
+  // validated estimate.
   const broadcastWithFallbackGas = estimationError !== undefined;
 
   // --- broadcast ---

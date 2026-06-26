@@ -87,14 +87,53 @@ In `~/.cursor/mcp.json`:
 
 ## Adding a signing wallet (for trading)
 
-The 20 read tools work with no wallet. To use the write tools (`sai_open_trade`, `sai_close_trade`, `sai_update_tpsl`, `sai_update_leverage`) and `sai_get_wallet_info`, the server needs a signer, supplied via **one** of these environment variables:
+The 20 read tools work with no wallet. To use the write tools (`sai_open_trade`, `sai_close_trade`, `sai_update_tpsl`, `sai_update_leverage`, `sai_send`) and `sai_get_wallet_info`, the server needs a signer.
+
+**The recommended way is a local keystore.** It's the simplest path: you run one command, never paste a seed phrase into a config file, and the secret stays out of the process environment and off the MCP/LLM channel. The server auto-loads it on startup.
+
+### New wallet
+
+```bash
+npx sai-mcp keygen --save
+```
+
+Generates a fresh random wallet, writes it to a local keystore at `~/.sai-mcp/wallet.json` (mode `0600`, override the path with `SAI_KEYSTORE`), and prints **only** the public EVM + Nibiru addresses. The seed and private key are deliberately **not** printed. The server reads the keystore automatically whenever no env signer is set, so there's nothing to paste into your config (and it's picked up live, no restart).
+
+Because `--save` keeps the secret out of its output, it's also the form to use when an **AI agent** sets up trading for you: the seed never reaches the model or transcript.
+
+### Existing wallet
+
+Already have a wallet? There's deliberately no import command (a CLI import would route your seed through your shell history or an AI session). Instead, write the keystore file yourself, in your own terminal, so the secret never leaves your machine:
+
+```bash
+mkdir -p ~/.sai-mcp
+# Put your seed phrase OR private key (exactly one) in the file:
+cat > ~/.sai-mcp/wallet.json <<'JSON'
+{ "mnemonic": "word1 word2 word3 ... word12" }
+JSON
+chmod 600 ~/.sai-mcp/wallet.json
+```
+
+Use `{ "privateKey": "0x..." }` instead if that's what you have. For a mnemonic you may optionally add `"derivationPath"` (defaults to `m/44'/60'/0'/0/0`). Keep exactly one of `mnemonic` / `privateKey` — the server errors if both are present. It reads the keystore live on the next call, so no restart is needed; confirm the loaded wallet with `sai_get_wallet_info`. Override the location with `SAI_KEYSTORE`.
+
+Type or paste the secret only into your own editor/terminal — never into a chat with an AI assistant.
+
+### Fund, then trade
+
+A freshly generated wallet is **empty**. Fund its EVM address with USDC for collateral, then call `sai_get_wallet_info` to confirm the balance landed and that it's the right wallet. Only then place a trade.
+
+Trading on Sai is **gasless**: the chain sponsors gas for trades through the Sai contract (see [Write tools](#write-tools-opt-in-require-a-signer)), so you don't need NIBI to open, close, or manage positions. You only need NIBI later if you want to **withdraw** funds out of this wallet (a plain transfer pays normal gas), or you can export the keystore's keys into a wallet that handles gas for you.
+
+> **Security:** the keystore is plaintext at rest (same exposure as a secret in a config `env` block), just with enforced `0600` permissions and kept out of your config file and process environment. Treat it like any other key material; to back it up, open `~/.sai-mcp/wallet.json` yourself in a private terminal and copy the phrase somewhere safe. Writes default to a dry run (`confirm=false`); you must explicitly pass `confirm=true` to broadcast a transaction.
+
+### Advanced: env-var signer (hosted / Docker / CI)
+
+For hosted, containerized, or CI deployments where a local keystore file is inconvenient, supply the signer via **one** of these environment variables instead. A set env var always wins over the keystore.
 
 | Variable | Value |
 |----------|-------|
 | `SAI_MNEMONIC` | Your 12/24-word seed phrase |
 | `SAI_PRIVATE_KEY` | A raw hex private key (`0x…`) |
-
-Set whichever you have (not both) in the `env` block of your MCP config.
 
 **Claude Desktop / Cursor** — add an `env` key alongside `command`/`args`:
 
@@ -118,27 +157,13 @@ Set whichever you have (not both) in the `env` block of your MCP config.
 claude mcp add sai -e SAI_MNEMONIC="word1 word2 ... word12" -- npx -y sai-mcp
 ```
 
-Verify it loaded by calling `sai_get_wallet_info`, which returns the loaded wallet's EVM + bech32 addresses and balances — confirm it's the right wallet before trading. Without a signer, the server still runs but the write/wallet tools are inert.
-
-### Don't have a wallet yet?
-
-Generate a fresh one locally with the bundled `keygen` subcommand:
-
-```bash
-npx sai-mcp keygen
-```
-
-It prints a new random mnemonic, the matching private key, and the wallet's EVM + Nibiru addresses, then exits. Paste **one** of the two secrets into your config's `env` block (as above). The wallet is derived on the same path the server uses (`m/44'/60'/0'/0/0`, overridable via `SAI_DERIVATION_PATH`), so the address shown is exactly the one the server will load.
-
-This runs entirely on your machine and never contacts the network or the MCP/LLM channel, so the seed stays in your terminal. The new wallet is empty: fund the printed address with NIBI (for gas) and USDC (collateral) before trading, and **back up the mnemonic** — that output is the only copy.
-
-> **Security:** the config file stores your seed phrase or key in plaintext on disk — lock down its file permissions and treat it like any other key material. Writes default to a dry run (`confirm=false`); you must explicitly pass `confirm=true` to broadcast a transaction.
+To mint a wallet for this path without writing a keystore, run plain `npx sai-mcp keygen` (no flag): it prints a fresh mnemonic + private key for you to copy into the `env` block. The secret is on stdout, so run that one yourself in a terminal, never via an assistant. The wallet is derived on the same path the server uses (`m/44'/60'/0'/0/0`, overridable via `SAI_DERIVATION_PATH`), so the address shown is exactly the one the server will load.
 
 ## Tools
 
 All tools accept an optional `network` argument (`"mainnet"` | `"testnet"`, default `mainnet`).
 
-Every tool carries MCP **annotations**: the 20 read tools are marked `readOnlyHint`, the 4 on-chain write tools `destructiveHint`, and each tool gets a human `title`, so clients can tell them apart. Every tool also returns **structured output**: the read tools wrap their payload under a `result` field, while the write tools and `sai_get_wallet_info` advertise a typed `outputSchema`. The server also ships an `instructions` block (units, market IDs, the dry-run safety model) in its initialize response, so a connected model has the conventions without being told.
+Every tool carries MCP **annotations**: the 20 read tools are marked `readOnlyHint`, the 5 on-chain write tools `destructiveHint`, and each tool gets a human `title`, so clients can tell them apart. Every tool also returns **structured output**: the read tools wrap their payload under a `result` field, while the write tools and `sai_get_wallet_info` advertise a typed `outputSchema`. The server also ships an `instructions` block (units, market IDs, the dry-run safety model) in its initialize response, so a connected model has the conventions without being told.
 
 ### Markets & trading
 
@@ -197,21 +222,24 @@ Use the escape hatch when the typed tools don't cover what you need. See the liv
 
 ### Write tools (opt-in, require a signer)
 
-These tools sign and broadcast on-chain transactions. They are inert unless you provide a wallet to the MCP server via env vars (see [Signer setup](#signer-setup)).
+These tools sign and broadcast on-chain transactions. They are inert unless you provide a wallet to the MCP server via a local keystore or env var (see [Signer setup](#signer-setup)).
 
 | Tool | Purpose |
 |------|---------|
 | `sai_get_wallet_info` | Report the configured signer's EVM + bech32 addresses, NIBI/USDC balances, nonce, and chain config |
+| `sai_send` | Withdraw native NIBI or **any ERC20** (USDC, stNIBI, or a `0x` token address) from the signer wallet to another address; `all: true` empties the balance. **Defaults to dry-run** |
 | `sai_open_trade` | Open a long or short perp position with USDC collateral. **Defaults to dry-run** — pass `confirm: true` to broadcast |
 | `sai_close_trade` | Close an open position, or cancel a pending limit/stop order (same on-chain call). **Defaults to dry-run** |
 | `sai_update_tpsl` | Set, change, or clear take-profit / stop-loss on an open position. **Defaults to dry-run** |
 | `sai_update_leverage` | Change a position's leverage (USDC collateral); notional held constant, collateral delta settled to/from the wallet. **Defaults to dry-run** |
 
-All four write tools identify a position by its per-user trade index — the `id` field returned by `sai_get_trader_trades`. You can only manage the configured signer's own trades.
+The four trade tools identify a position by its per-user trade index — the `id` field returned by `sai_get_trader_trades`. You can only manage the configured signer's own trades.
+
+**Withdrawing / emptying a wallet.** `sai_send` is how funds come back out. Close any open positions first (`sai_close_trade`) so collateral returns to the wallet, then `sai_send` each token to your own address — `token: "usdc"` (or `"nibi"`, or a `0x` token contract such as stNIBI), with `amount` for a partial withdrawal or `all: true` to sweep the balance. To fully drain a wallet, sweep each ERC20 first, then NIBI last (the NIBI sweep retains only its own gas). Unlike the trade tools, a plain transfer is **not** gas-sponsored — sponsorship is specific to the Sai perp contract. Even though `eth_gasPrice` reports `0`, the chain enforces a minimum gas price (~1e12 wei/gas, roughly 0.05 NIBI per transfer) and deducts it from the sender, so **the wallet must hold a little native NIBI to send anything, including to withdraw USDC.** A wallet with 0 NIBI cannot `sai_send`; fund a small amount of NIBI first. The dry-run floors to this minimum and reports `funded: false` when the wallet can't cover gas. **Exporting your key:** there is intentionally no tool that returns your seed phrase or private key, and the assistant will never print it. Retrieve it yourself from the keystore file (`~/.sai-mcp/wallet.json`, or `SAI_KEYSTORE`) or your own `SAI_MNEMONIC` / `SAI_PRIVATE_KEY` config — see [Security](#security).
 
 **Safety model.** Every write tool defaults to `confirm: false`, which simulates the action (gas estimate + validation against market/position constraints) without signing or broadcasting. The returned summary includes the resolved position, the change being made, the wallet, and the encoded wasm message. Set `confirm: true` only after reviewing the dry-run output. `sai_close_trade`, `sai_update_tpsl`, and `sai_update_leverage` refuse to broadcast if gas estimation fails; `sai_open_trade` instead falls back to a fixed gas limit and broadcasts anyway (flagged via `broadcastWithFallbackGas`), because `eth_estimateGas` is unreliable for the funtoken-precompile open path. Operators can further constrain trades with env-based caps — see [Trade guard rails](#trade-guard-rails-operator-set-caps).
 
-**Freshly-opened positions can revert on close/update.** Gas estimation does not catch one timing case: acting on a position within ~1–2 minutes of opening it can revert on-chain even when the dry-run gas estimate succeeds, because the contract enforces a brief minimum hold that `eth_estimateGas` does not simulate. So a clean dry-run is not a guarantee an immediate close/update lands. The dry-run flags a freshly-opened position under a `warning` field; and if a confirmed `sai_close_trade` / `sai_update_tpsl` / `sai_update_leverage` reverts, the tool returns the tx hash, explorer link, and a "wait ~1–2 minutes and retry" hint instead of an opaque `CALL_EXCEPTION`. Confirm a trade's true state via `sai_get_trader_history` (look for the `position_closed` / `tpsl_updated` event) rather than the eventually-consistent `sai_get_trader_trades`.
+**Freshly-opened positions can revert on close/update.** Gas estimation does not catch one timing case: acting on a position within ~1–2 minutes of opening it has been observed to revert on-chain even when the dry-run gas estimate succeeds. This is a transient oracle/settlement-timing condition right after open, not a contract-enforced minimum hold — the perp contract's close handler (`NibiruChain/sai-perps`, `contracts/perp/src/trade.rs`) has no open-time check; its only rejections are `Paused`, `MarketClosed`, and `OraclePriceStale`. `eth_estimateGas` does not catch it. So a clean dry-run is not a guarantee an immediate close/update lands. The dry-run flags a freshly-opened position under a `warning` field; and if a confirmed `sai_close_trade` / `sai_update_tpsl` / `sai_update_leverage` reverts, the tool returns the tx hash, explorer link, and a "wait ~1–2 minutes and retry" hint instead of an opaque `CALL_EXCEPTION`. Confirm a trade's true state via `sai_get_trader_history` (look for the `position_closed` / `tpsl_updated` event) rather than the eventually-consistent `sai_get_trader_trades`.
 
 The trade is executed via the `PerpVaultEvmInterface` contract on Nibiru's EVM. Gas is sponsored by the chain when targeting this contract, so the wallet does not need NIBI for gas — only USDC for collateral. No ERC20 approve is required; the contract pulls USDC directly via the Nibiru funtoken precompile.
 
@@ -291,7 +319,7 @@ claude mcp add --transport http sai http://127.0.0.1:3000/
 
 **Security.** The server binds to `127.0.0.1` and enables DNS-rebinding protection. Because the write tools sign with the configured wallet's key, an open HTTP port lets anyone who can reach it trade with that wallet, so:
 
-- With a signer (`SAI_MNEMONIC` / `SAI_PRIVATE_KEY`) **and** `SAI_HTTP_TOKEN` set, every request must carry `Authorization: Bearer <token>` or it gets `401`.
+- With a signer configured (keystore or `SAI_MNEMONIC` / `SAI_PRIVATE_KEY`) **and** `SAI_HTTP_TOKEN` set, every request must carry `Authorization: Bearer <token>` or it gets `401`.
 - With a signer but **no** token, the server still serves the write tools and prints a loud startup warning. Set a token, or drop the signer to run read-only over HTTP.
 - Exposing beyond localhost is not recommended. The allowed-host list defaults to loopback, so a non-local bind (e.g. `SAI_HTTP_HOST=0.0.0.0`) must add its public `host:port` to `SAI_HTTP_ALLOWED_HOSTS` or every remote request is rejected with `403`. Do this only behind a bearer token and a TLS-terminating proxy.
 
@@ -299,13 +327,21 @@ Sessions are stateful (the server issues an `Mcp-Session-Id` on initialize); the
 
 ### Signer setup
 
-Write tools (`sai_open_trade`, `sai_close_trade`, `sai_update_tpsl`, `sai_update_leverage`, `sai_get_wallet_info`) are disabled until you give the MCP server a wallet. Use **one** of:
+Write tools (`sai_open_trade`, `sai_close_trade`, `sai_update_tpsl`, `sai_update_leverage`, `sai_get_wallet_info`) are disabled until you give the MCP server a wallet.
+
+**Recommended (local): a keystore.** Run once and the server auto-loads it; nothing to paste into a config:
 
 ```bash
-# Recommended: 12/24-word mnemonic
-SAI_MNEMONIC="word word word ..." npx sai-mcp
+npx sai-mcp keygen --save       # fresh wallet -> ~/.sai-mcp/wallet.json (mode 0600)
+```
 
-# Or a raw private key
+Already have a wallet? Write `~/.sai-mcp/wallet.json` yourself with `{ "mnemonic": "..." }` or `{ "privateKey": "0x..." }` and `chmod 600` it (see [Existing wallet](#existing-wallet)). There's no import command, so your seed never goes through a shell command or a chat.
+
+**Hosted / Docker / CI: an env-var signer.** Supply **one** (a set env var overrides the keystore):
+
+```bash
+SAI_MNEMONIC="word word word ..." npx sai-mcp
+# or
 SAI_PRIVATE_KEY="0x..." npx sai-mcp
 ```
 
@@ -313,6 +349,7 @@ Optional:
 
 ```bash
 SAI_DERIVATION_PATH="m/44'/60'/0'/0/0"   # default; for mnemonic only
+SAI_KEYSTORE="~/.sai-mcp/wallet.json"    # default keystore path; consulted only when no env signer is set
 ```
 
 #### Trade guard rails (operator-set caps)
@@ -344,7 +381,7 @@ In a Claude Desktop / Cursor / Claude Code config, pass the env via the `env` fi
 }
 ```
 
-**Treat the env file containing your mnemonic like any other private key.** The MCP server never exposes the seed via any tool — it only derives the address and signs locally. If you'd rather not give an LLM access to a hot wallet, leave these env vars unset; read-only tools continue to work.
+**Treat your keystore (or the env file containing your mnemonic) like any other private key.** The MCP server never exposes the seed via any tool; it only derives the address and signs locally. If you'd rather not give an LLM access to a hot wallet, configure no signer at all; read-only tools continue to work.
 
 ## Develop
 
@@ -353,6 +390,18 @@ npm install
 npm run dev          # tsc --watch
 npm run inspect      # open MCP Inspector against the server
 ```
+
+### Testing the CLI locally
+
+To exercise the `sai-mcp` command against your local checkout (e.g. testing changes before publishing, rather than the published version `npx` would fetch), build it and symlink the bin:
+
+```bash
+npm install
+npm run build        # compile to dist/ (or `npm run dev` to rebuild on change)
+npm link             # `sai-mcp` now resolves to this checkout
+```
+
+After that, `sai-mcp` (and `sai-mcp keygen`, etc.) run your working copy. `npm unlink -g sai-mcp` removes the symlink when you're done. Note that the MCP server itself doesn't need this — configs launch it directly via `node /absolute/path/to/dist/index.js`.
 
 ## License
 

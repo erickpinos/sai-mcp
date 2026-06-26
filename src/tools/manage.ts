@@ -139,14 +139,23 @@ function marketSymbol(t: ManagedTrade): string {
 // --- freshly-opened-position guard -----------------------------------------
 //
 // Acting on a position within ~2 minutes of opening can revert ON-CHAIN even
-// though estimateGas returns a clean estimate with no error. The contract's
-// funtoken-precompile path appears to enforce a brief minimum-hold / same-block
-// guard that eth_estimateGas does not simulate. So a clean dry-run is NOT a
-// guarantee an immediate close/update lands. (Observed: open then close ~8s
-// later reverted with an undecodable CALL_EXCEPTION; the same close ~2 min later
-// succeeded.) We surface this as an advisory in the dry-run summary, and (if a
-// real broadcast reverts) translate the opaque revert into an actionable
-// "wait and retry" hint rather than leaking the raw precompile error.
+// though estimateGas returns a clean estimate with no error. So a clean dry-run
+// is NOT a guarantee an immediate close/update lands. (Observed: open then close
+// ~8s later reverted with an undecodable CALL_EXCEPTION; the same close ~2 min
+// later succeeded.) This is NOT a contract-enforced minimum hold: the perp
+// contract's close handler (NibiruChain/sai-perps, contracts/perp/src/trade.rs
+// close_market_trade) has no open-time/block check — its only rejections are
+// Paused, MarketClosed, and OraclePriceStale, none keyed on how long the trade
+// has been open. The lone "min hold" in the contract (fee_tier_min_hold_blocks)
+// only revokes fee-tier reward points on short-lived trades; it never reverts a
+// close. The transient revert is most consistent with an oracle/settlement
+// timing condition right after open. Empirically confirmed on mainnet
+// (2026-06-26): open+close in the SAME block, and closes at +3 and +24 blocks,
+// all succeeded, so there is no age-based gate; the one-off 2026-06-23 revert
+// did not recur across those four closes. We still surface the position age as
+// a dry-run advisory, and (if a real broadcast reverts) translate the opaque
+// revert into an actionable "wait and retry" hint rather than leaking the raw
+// precompile error.
 const RECENT_OPEN_SECONDS = 120;
 
 function positionAgeSeconds(trade: ManagedTrade): number | null {
@@ -163,7 +172,7 @@ function recentOpenAdvisory(
   verb: "close" | "modify",
 ): string | undefined {
   if (ageSec === null || ageSec >= RECENT_OPEN_SECONDS) return undefined;
-  return `This position was opened ~${ageSec}s ago. Acting on a position within ~1-2 minutes of opening can revert on-chain even when this gas estimate succeeds (the contract appears to enforce a brief minimum hold). If the ${verb} broadcast reverts, wait ~1-2 minutes and retry. This tool does not auto-wait.`;
+  return `This position was opened ~${ageSec}s ago. Acting on a position within ~1-2 minutes of opening has been observed to revert on-chain even when this gas estimate succeeds (a transient oracle/settlement-timing condition right after open, not a contract-enforced minimum hold). If the ${verb} broadcast reverts, wait ~1-2 minutes and retry. This tool does not auto-wait.`;
 }
 
 // Hint appended to a broadcast-revert error, tailored by how fresh the position is.
@@ -307,8 +316,8 @@ export async function closeTrade(args: {
   const isPendingOrder = trade.tradeType !== "trade";
   const action = isPendingOrder ? "cancel-order" : "close-position";
 
-  // A market position only has the minimum-hold revert risk; a pending order is
-  // cancellable immediately, so only advise/hint for real positions.
+  // A market position only has the post-open transient-revert risk; a pending
+  // order is cancellable immediately, so only advise/hint for real positions.
   const ageSec = isPendingOrder ? null : positionAgeSeconds(trade);
   const advisory = recentOpenAdvisory(ageSec, "close");
   const revertHint = revertRetryHint(ageSec);

@@ -46,6 +46,7 @@ import {
 import { getCandles, getCandlesSchema } from "./tools/candles.js";
 import { rawQuery, rawQuerySchema } from "./tools/raw.js";
 import { getWalletInfo, getWalletInfoSchema } from "./tools/wallet.js";
+import { send, sendSchema } from "./tools/send.js";
 import { openTrade, openTradeSchema } from "./tools/trade.js";
 import {
   closeTrade,
@@ -60,6 +61,7 @@ import {
   walletInfoOutputSchema,
   openTradeOutputSchema,
   manageTradeOutputSchema,
+  sendOutputSchema,
 } from "./output.js";
 import { registerResources } from "./resources.js";
 import { registerPrompts } from "./prompts.js";
@@ -82,10 +84,24 @@ Conventions:
 Reads are eventually-consistent:
 - Read tools query a live indexer delayed behind the chain by a few seconds to ~1-2 minutes, and are NOT read-your-writes. Immediately after a write, sai_get_trader_trades may still show stale (pre-write) state. Confirm a write landed via the broadcast tx receipt (status: success) and/or the matching sai_get_trader_history event (match on evmTxHash), not sai_get_trader_trades.
 
-Write tools (sai_open_trade, sai_close_trade, sai_update_tpsl, sai_update_leverage):
-- Require a signer: set SAI_MNEMONIC or SAI_PRIVATE_KEY in the MCP server environment. Inert otherwise.
+Write tools (sai_open_trade, sai_close_trade, sai_update_tpsl, sai_update_leverage, sai_send):
+- Require a signer (inert otherwise). Default: ASK the user whether to create a NEW wallet, then run \`sai-mcp keygen --save\` (safe in-session; writes a 0600 keystore the server auto-loads, no restart, prints no secret). A user with an EXISTING wallet adds it by editing the keystore JSON themselves (see "Onboarding a signer"). Hosted/Docker setups can instead set SAI_MNEMONIC or SAI_PRIVATE_KEY in the server environment.
 - DEFAULT TO DRY-RUN (confirm=false): they simulate + gas-estimate and return a summary WITHOUT signing or broadcasting. Always preview with confirm=false, show the summary to the user, then re-run with confirm=true to broadcast.
-- Acting on a position within ~1-2 minutes of opening it can revert on-chain even when the dry-run gas estimate succeeds (the contract enforces a brief minimum hold that eth_estimateGas does not simulate). The close/update dry-runs flag this under "warning".
+- Acting on a position within ~1-2 minutes of opening it has been observed to revert on-chain even when the dry-run gas estimate succeeds (a transient oracle/settlement-timing condition right after open, NOT a contract-enforced minimum hold). eth_estimateGas does not catch it; if a confirmed close/update reverts, wait ~1-2 minutes and retry. The close/update dry-runs flag this under "warning".
+- Gas: Sai perp trades are GASLESS. sai_open_trade / sai_close_trade / sai_update_tpsl / sai_update_leverage target the PerpVaultEvmInterface contract, whose gas the chain sponsors, so the wallet needs ZERO NIBI to open, close, or manage a position. When funding a wallet to trade, ask ONLY for USDC; never tell the user they need NIBI "for gas" to trade, and never gate a trade on the NIBI balance. NIBI is needed ONLY for non-Sai transactions: sai_send (withdrawing funds back out, or any plain transfer) is an ordinary EVM transfer and is NOT gas-sponsored, so even though eth_gasPrice reports 0 the chain enforces a minimum gas price and deducts a small amount of native NIBI from the sender. A wallet with 0 NIBI can still trade but cannot sai_send; sai_send's dry-run reports a "funded" flag (false when the wallet lacks NIBI for gas).
+
+Withdrawing funds / offboarding (what to say when a user asks "how do I get my money out?"):
+- Use sai_send to withdraw. It sends native NIBI or any ERC20 (token: "nibi" | "usdc" | a 0x token address such as stNIBI). Close any open positions first (sai_close_trade) so the collateral returns to the wallet, then sai_send the USDC (and any stNIBI) out to the user's own address. To fully empty a wallet, sweep each ERC20 with all=true, then sweep NIBI last (the NIBI sweep keeps back only its own gas). Always preview with confirm=false and show the user the destination + amount before confirm=true.
+
+Exporting the private key / seed phrase (what to say when a user asks "how do I get my key out?"):
+- There is intentionally NO MCP tool that returns the seed phrase or private key, and you must NEVER print, echo, or reconstruct it in the conversation — a secret in chat is a key compromise. Do not offer to read it from the keystore and show it.
+- Tell the user they can export it themselves, outside this channel: the wallet is stored at the keystore path (default ~/.sai-mcp/wallet.json, override SAI_KEYSTORE), a 0600 JSON file containing their "mnemonic" or "privateKey". They open that file in their own terminal. If they configured the signer via the SAI_MNEMONIC / SAI_PRIVATE_KEY env var instead, the secret is already in their own MCP config. Either way the user retrieves it directly; the assistant never relays it.
+
+Onboarding a signer (no wallet configured yet):
+- Default path: ASK the user whether you should create a NEW wallet for them. On yes, run \`sai-mcp keygen --save\` yourself (you have shell access) or have them run it. It mints a fresh wallet, writes a 0600 keystore the server auto-loads (no restart, no config edit), and intentionally prints NO secret, so it is safe to run in this session. The server reads the keystore live on each call, so it takes effect immediately.
+- If the user instead wants to use an EXISTING wallet, they add it by editing the keystore file THEMSELVES, in their own terminal or editor, outside this chat. Give them these steps: create the JSON file at the keystore path (default ~/.sai-mcp/wallet.json, override SAI_KEYSTORE) containing either {"mnemonic": "<their 12/24 words>"} (optionally add "derivationPath", default m/44'/60'/0'/0/0) or {"privateKey": "0x..."} (exactly one of the two, never both), then \`chmod 600\` it. The server picks it up live on the next call, no restart. There is NO import command. NEVER ask the user to type, paste, or pipe a seed phrase or private key into this conversation, never print one, and do NOT offer to write the keystore for them from a secret they share; a secret in chat is a key compromise.
+- A freshly created wallet is EMPTY. Do NOT proceed to a trade after setup. Call sai_get_wallet_info, show the user the EVM funding address, and tell them to send USDC (collateral) to it. Trading on Sai is gasless, so the wallet needs ONLY USDC and ZERO NIBI to trade: do NOT tell the user to fund NIBI "for gas" to open the position, and do NOT imply the trade needs gas. (A little NIBI matters only later, if they withdraw funds back out via sai_send; see offboarding.) Then STOP and wait for the user to confirm the USDC landed.
+- Only after sai_get_wallet_info shows a non-zero USDC balance should you run the trade (starting, as always, with a confirm=false dry-run). The NIBI balance is irrelevant to opening a trade; never wait on it or ask the user to top it up to trade. Transfers take time; let the user drive the pace rather than retrying the trade against an unfunded wallet.
 
 For anything the typed tools do not cover, use sai_graphql_query (schema explorer: https://sai-keeper.nibiru.fi/).`;
 
@@ -336,18 +352,26 @@ export function createServer(): McpServer {
     { title: "Run GraphQL query" },
   );
 
-  // Write tools - require SAI_MNEMONIC or SAI_PRIVATE_KEY env var on the MCP server.
+  // Write tools - require a configured signer (keystore via keygen, or SAI_MNEMONIC / SAI_PRIVATE_KEY env var).
   register(
     "sai_get_wallet_info",
-    "Return the configured signer's EVM and bech32 addresses, NIBI and USDC balances, current nonce, and chain config. Requires SAI_MNEMONIC or SAI_PRIVATE_KEY in the MCP server environment. Call this first to confirm which wallet is loaded before any write operation.",
+    "Return the configured signer's EVM and bech32 addresses, NIBI and USDC balances, current nonce, and chain config. Requires a configured signer (keystore or env). Call this first to confirm which wallet is loaded before any write operation.",
     getWalletInfoSchema,
     getWalletInfo,
     { title: "Get signer wallet info", outputSchema: walletInfoOutputSchema },
   );
 
   register(
+    "sai_send",
+    "Send native NIBI or any ERC20 token from the signer wallet to another address — used to withdraw collateral or empty a wallet when you're done with it. token accepts \"nibi\" (native), \"usdc\" (collateral shorthand), or any ERC20 contract address (0x...) such as stNIBI or another deposited token; decimals are read from the contract. The recipient accepts either an EVM 0x... address or a Nibiru nibi1... bech32 address. Set amount for a specific quantity, or all=true to sweep the entire balance (for NIBI a small gas reserve is kept back). Unlike trades, plain transfers are NOT routed through the gas-sponsored perp contract: they use the network gas price (currently 0 on Nibiru mainnet, so typically no NIBI is needed; if it ever becomes nonzero the wallet needs a little NIBI). Defaults to a DRY RUN that resolves the recipient, reads token metadata and balances, and estimates gas without broadcasting — set confirm=true to actually transfer. Requires a configured signer.",
+    sendSchema,
+    send,
+    { title: "Send NIBI / ERC20", destructive: true, outputSchema: sendOutputSchema },
+  );
+
+  register(
     "sai_open_trade",
-    "Open a long or short perpetual position on Sai using USDC collateral. Defaults to a DRY RUN that simulates and gas-estimates the trade without broadcasting - set confirm=true to actually send the transaction. The signer is loaded from SAI_MNEMONIC or SAI_PRIVATE_KEY on the MCP server. Always preview with confirm=false (or omit it) and show the summary to the user before re-running with confirm=true.",
+    "Open a long or short perpetual position on Sai using USDC collateral. Defaults to a DRY RUN that simulates and gas-estimates the trade without broadcasting - set confirm=true to actually send the transaction. The signer is the wallet configured on the MCP server (keystore or env). Always preview with confirm=false (or omit it) and show the summary to the user before re-running with confirm=true.",
     openTradeSchema,
     openTrade,
     { title: "Open perp position", destructive: true, outputSchema: openTradeOutputSchema },
@@ -355,7 +379,7 @@ export function createServer(): McpServer {
 
   register(
     "sai_close_trade",
-    "Close an open Sai perpetual position, or cancel a pending limit/stop order (same on-chain call - the contract distinguishes by the trade's state). Identify the trade by its per-user index (the `id` from sai_get_trader_trades). Defaults to a DRY RUN that simulates and gas-estimates without broadcasting - set confirm=true to actually send. The signer is loaded from SAI_MNEMONIC or SAI_PRIVATE_KEY; only the signer's own trades can be managed. Caveat: closing a position within ~1-2 minutes of opening it can revert on-chain even when the dry-run gas estimate succeeds (the contract enforces a brief minimum hold); if a confirmed close reverts, wait ~1-2 minutes and retry. The dry-run flags a freshly-opened position under `warning`.",
+    "Close an open Sai perpetual position, or cancel a pending limit/stop order (same on-chain call - the contract distinguishes by the trade's state). Identify the trade by its per-user index (the `id` from sai_get_trader_trades). Defaults to a DRY RUN that simulates and gas-estimates without broadcasting - set confirm=true to actually send. The signer is the wallet configured on the MCP server; only the signer's own trades can be managed. Caveat: closing a position within ~1-2 minutes of opening it has been observed to revert on-chain even when the dry-run gas estimate succeeds (a transient oracle/settlement-timing condition right after open, not a contract-enforced minimum hold); if a confirmed close reverts, wait ~1-2 minutes and retry. The dry-run flags a freshly-opened position under `warning`.",
     closeTradeSchema,
     closeTrade,
     { title: "Close position / cancel order", destructive: true, outputSchema: manageTradeOutputSchema },
@@ -363,7 +387,7 @@ export function createServer(): McpServer {
 
   register(
     "sai_update_tpsl",
-    "Set or clear the take-profit and/or stop-loss on an open Sai position. Omit a field to leave it unchanged, pass a price to set it, or pass null to clear it. Validates that newly-set targets are on the correct side of the live price. Identify the trade by its `id` from sai_get_trader_trades. Defaults to a DRY RUN - set confirm=true to broadcast. Signer from SAI_MNEMONIC or SAI_PRIVATE_KEY.",
+    "Set or clear the take-profit and/or stop-loss on an open Sai position. Omit a field to leave it unchanged, pass a price to set it, or pass null to clear it. Validates that newly-set targets are on the correct side of the live price. Identify the trade by its `id` from sai_get_trader_trades. Defaults to a DRY RUN - set confirm=true to broadcast. Requires a configured signer.",
     updateTpSlSchema,
     updateTpSl,
     { title: "Update take-profit / stop-loss", destructive: true, outputSchema: manageTradeOutputSchema },
@@ -371,7 +395,7 @@ export function createServer(): McpServer {
 
   register(
     "sai_update_leverage",
-    "Change the leverage on an open Sai position (USDC collateral only). Notional is held constant: raising leverage frees collateral back to the wallet, lowering it pulls additional USDC from the wallet. newLeverage must be a whole number within the market's min/max. Identify the trade by its `id` from sai_get_trader_trades. Defaults to a DRY RUN - set confirm=true to broadcast. Signer from SAI_MNEMONIC or SAI_PRIVATE_KEY.",
+    "Change the leverage on an open Sai position (USDC collateral only). Notional is held constant: raising leverage frees collateral back to the wallet, lowering it pulls additional USDC from the wallet. newLeverage must be a whole number within the market's min/max. Identify the trade by its `id` from sai_get_trader_trades. Defaults to a DRY RUN - set confirm=true to broadcast. Requires a configured signer.",
     updateLeverageSchema,
     updateLeverage,
     { title: "Update position leverage", destructive: true, outputSchema: manageTradeOutputSchema },

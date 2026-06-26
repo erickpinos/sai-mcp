@@ -59,7 +59,7 @@ landed via the broadcast tx receipt (status: success) and/or the matching
 
 - Require a signer: set \`SAI_MNEMONIC\` or \`SAI_PRIVATE_KEY\` in the MCP server environment. Inert otherwise.
 - **DEFAULT TO DRY-RUN** (\`confirm=false\`): they simulate + gas-estimate and return a summary WITHOUT signing or broadcasting. Always preview with \`confirm=false\`, show the summary to the user, then re-run with \`confirm=true\` to broadcast.
-- Acting on a position within ~1-2 minutes of opening it can revert on-chain even when the dry-run gas estimate succeeds (the contract enforces a brief minimum hold that \`eth_estimateGas\` does not simulate). The close/update dry-runs flag this under "warning".
+- Acting on a position within ~1-2 minutes of opening it has been observed to revert on-chain even when the dry-run gas estimate succeeds (a transient oracle/settlement-timing condition right after open, NOT a contract-enforced minimum hold). \`eth_estimateGas\` does not catch it; if a confirmed close/update reverts, wait ~1-2 minutes and retry. The close/update dry-runs flag this under "warning".
 
 ## Resources
 
