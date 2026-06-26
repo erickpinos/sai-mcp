@@ -13,10 +13,10 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc && chmod +x dist/index.js",
+    "build": "tsc",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
-    "start:http": "SAI_HTTP_PORT=3000 node dist/index.js",
+    "start:http": "cross-env SAI_HTTP_PORT=3000 node dist/index.js",
     "inspect": "npx @modelcontextprotocol/inspector node dist/index.js",
     "prepublishOnly": "npm run build"
   },
@@ -32,6 +32,14 @@
   ],
   "author": "Erick Pinos <erick@erickpinos.com>",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/erickpinos/sai-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/erickpinos/sai-mcp/issues"
+  },
+  "homepage": "https://github.com/erickpinos/sai-mcp#readme",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
     "bech32": "^2.0.0",
@@ -40,6 +48,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "cross-env": "^7.0.3",
     "typescript": "^5.7.0"
   },
   "engines": {

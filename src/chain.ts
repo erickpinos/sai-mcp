@@ -42,6 +42,33 @@ export function evmToBech32(evmAddr: string, hrp = "nibi"): string {
   return bech32.encode(hrp, bech32.toWords(bytes));
 }
 
+// Validate (and checksum-normalize) an EVM hex address, throwing a clear error
+// on malformed input. Shared by the trader and vault address resolvers so a bad
+// 0x fails loudly instead of querying a garbage address that silently returns
+// nothing.
+export function normalizeEvmAddress(addr: string): string {
+  try {
+    return ethers.getAddress(addr.trim());
+  } catch {
+    throw new Error(
+      `"${addr}" looks like an EVM address but is not a valid 20-byte 0x hex address.`,
+    );
+  }
+}
+
+// Accept either a Nibiru bech32 address (nibi1...) or an EVM hex address
+// (0x...) for any trader/depositor/referrer filter, returning the bech32 form
+// the keeper indexes by. The keeper only matches on bech32, so a raw 0x address
+// would silently return nothing; converting up front makes 0x "just work". A
+// wallet's 0x and bech32 are the same 20 bytes, so this conversion is exact.
+export function normalizeTraderAddress(addr: string): string {
+  const trimmed = addr.trim();
+  if (/^0x/i.test(trimmed)) {
+    return evmToBech32(normalizeEvmAddress(trimmed), "nibi");
+  }
+  return trimmed;
+}
+
 // ----- signer setup -----
 export type ResolvedWallet = {
   wallet: ethers.HDNodeWallet | ethers.Wallet;

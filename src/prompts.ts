@@ -53,7 +53,9 @@ export function registerPrompts(server: McpServer) {
         trader: z
           .string()
           .min(1)
-          .describe("Trader bech32 address (nibi1...)."),
+          .describe(
+            "Trader address: a Nibiru bech32 address (nibi1...) or an EVM hex address (0x...).",
+          ),
         network: networkArg,
       },
     },

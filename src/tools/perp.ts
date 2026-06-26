@@ -1,10 +1,14 @@
 import { z } from "zod";
 import { graphqlRequest, type Network } from "../client.js";
+import { normalizeTraderAddress } from "../chain.js";
 
 const NetworkSchema = z
   .enum(["mainnet", "testnet"])
   .default("mainnet")
   .describe("Network to query. Defaults to mainnet.");
+
+const TRADER_ADDRESS_DESC =
+  "Trader address: a Nibiru bech32 address (nibi1...) or an EVM hex address (0x...). Both forms resolve to the same wallet.";
 
 export const listMarketsSchema = {
   network: NetworkSchema,
@@ -119,7 +123,7 @@ export async function getMarket(args: {
 
 export const getTraderTradesSchema = {
   network: NetworkSchema,
-  trader: z.string().min(1).describe("Trader bech32 address (e.g. nibi1...)."),
+  trader: z.string().min(1).describe(TRADER_ADDRESS_DESC),
   isOpen: z
     .boolean()
     .optional()
@@ -143,7 +147,9 @@ export async function getTraderTrades(args: {
   limit: number;
   offset: number;
 }) {
-  const where: Record<string, unknown> = { trader: args.trader };
+  const where: Record<string, unknown> = {
+    trader: normalizeTraderAddress(args.trader),
+  };
   if (args.isOpen !== undefined) where.isOpen = args.isOpen;
   if (args.collateralId !== undefined) where.perpCollateralId = args.collateralId;
   // NOTE: the keeper's `perpMarketId` filter is broken server-side. It
@@ -216,7 +222,7 @@ export async function getTraderTrades(args: {
 
 export const getTraderHistorySchema = {
   network: NetworkSchema,
-  trader: z.string().min(1).describe("Trader bech32 address."),
+  trader: z.string().min(1).describe(TRADER_ADDRESS_DESC),
   limit: z.number().int().positive().max(500).default(50),
   offset: z.number().int().nonnegative().default(0),
 };
@@ -254,7 +260,7 @@ export async function getTraderHistory(args: {
   return graphqlRequest(
     query,
     {
-      where: { trader: args.trader },
+      where: { trader: normalizeTraderAddress(args.trader) },
       limit: args.limit,
       offset: args.offset,
     },
@@ -264,7 +270,7 @@ export async function getTraderHistory(args: {
 
 export const getUserPortfolioSchema = {
   network: NetworkSchema,
-  trader: z.string().min(1).describe("Trader bech32 address."),
+  trader: z.string().min(1).describe(TRADER_ADDRESS_DESC),
   range: z
     .enum(["1d", "7d", "30d", "all"])
     .default("all")
@@ -295,14 +301,14 @@ export async function getUserPortfolio(args: {
   `;
   return graphqlRequest(
     query,
-    { trader: args.trader, range: args.range },
+    { trader: normalizeTraderAddress(args.trader), range: args.range },
     args.network,
   );
 }
 
 export const getFeeTierProgressSchema = {
   network: NetworkSchema,
-  trader: z.string().min(1).describe("Trader bech32 address."),
+  trader: z.string().min(1).describe(TRADER_ADDRESS_DESC),
 };
 
 export async function getFeeTierProgress(args: {
@@ -333,5 +339,9 @@ export async function getFeeTierProgress(args: {
       }
     }
   `;
-  return graphqlRequest(query, { trader: args.trader }, args.network);
+  return graphqlRequest(
+    query,
+    { trader: normalizeTraderAddress(args.trader) },
+    args.network,
+  );
 }

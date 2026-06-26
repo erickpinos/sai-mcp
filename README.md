@@ -1,23 +1,23 @@
 # sai-mcp
 
-An [MCP](https://modelcontextprotocol.io) server for **[Sai.fun](https://sai.fun)** — the decentralized perpetual futures protocol on [Nibiru Chain](https://nibiru.fi). Exposes the `sai-keeper` GraphQL indexer as MCP tools so any MCP-compatible client (Claude Desktop, Cursor, Claude Code, etc.) can query live Sai data without writing GraphQL.
+An [MCP](https://modelcontextprotocol.io) server for the **[Sai.fun](https://sai.fun)** decentralized perpetual futures protocol on [Nibiru Chain](https://nibiru.fi). Exposes the `sai-keeper` GraphQL indexer as MCP tools so any MCP-compatible client (Claude Desktop, Cursor, Claude Code, etc.) can query live Sai data without writing GraphQL.
 
 ## What you can ask
 
 - "What perp markets does Sai have right now and what's their funding rate?"
 - "Is the SPY market open, and what are its trading hours?"
-- "Show me open positions for trader `nibi1abc...` with current PnL"
+- "Show me open positions for trader `0x1238…4323` with current PnL"
 - "What's the TVL and APY of the USDC vault?"
 - "How much fees has the Sai protocol collected this week?"
 - "Who's on top of the PnL leaderboard?"
 - "Plot BTC's last 24 hours of hourly candles"
-- "Did `nibi1xyz...` get liquidated in the last 24 hours?"
+- "Did `0x1238…4323` get liquidated in the last 24 hours?"
+
+Trader, depositor, and referrer addresses accept either an EVM hex address (`0x...`) or a Nibiru bech32 address (`nibi1...`) interchangeably. The server converts `0x` to bech32 for you.
 
 ## Install
 
 ### Option A: Run via `npx` (no install)
-
-Once published:
 
 ```bash
 npx sai-mcp
@@ -26,7 +26,7 @@ npx sai-mcp
 ### Option B: Clone and build locally
 
 ```bash
-git clone https://github.com/<you>/sai-mcp.git
+git clone https://github.com/erickpinos/sai-mcp.git
 cd sai-mcp
 npm install
 npm run build
@@ -84,6 +84,55 @@ In `~/.cursor/mcp.json`:
   }
 }
 ```
+
+## Adding a signing wallet (for trading)
+
+The 20 read tools work with no wallet. To use the write tools (`sai_open_trade`, `sai_close_trade`, `sai_update_tpsl`, `sai_update_leverage`) and `sai_get_wallet_info`, the server needs a signer, supplied via **one** of these environment variables:
+
+| Variable | Value |
+|----------|-------|
+| `SAI_MNEMONIC` | Your 12/24-word seed phrase |
+| `SAI_PRIVATE_KEY` | A raw hex private key (`0x…`) |
+
+Set whichever you have (not both) in the `env` block of your MCP config.
+
+**Claude Desktop / Cursor** — add an `env` key alongside `command`/`args`:
+
+```json
+{
+  "mcpServers": {
+    "sai": {
+      "command": "npx",
+      "args": ["-y", "sai-mcp"],
+      "env": {
+        "SAI_MNEMONIC": "word1 word2 word3 ... word12"
+      }
+    }
+  }
+}
+```
+
+**Claude Code** — pass it with `-e`:
+
+```bash
+claude mcp add sai -e SAI_MNEMONIC="word1 word2 ... word12" -- npx -y sai-mcp
+```
+
+Verify it loaded by calling `sai_get_wallet_info`, which returns the loaded wallet's EVM + bech32 addresses and balances — confirm it's the right wallet before trading. Without a signer, the server still runs but the write/wallet tools are inert.
+
+### Don't have a wallet yet?
+
+Generate a fresh one locally with the bundled `keygen` subcommand:
+
+```bash
+npx sai-mcp keygen
+```
+
+It prints a new random mnemonic, the matching private key, and the wallet's EVM + Nibiru addresses, then exits. Paste **one** of the two secrets into your config's `env` block (as above). The wallet is derived on the same path the server uses (`m/44'/60'/0'/0/0`, overridable via `SAI_DERIVATION_PATH`), so the address shown is exactly the one the server will load.
+
+This runs entirely on your machine and never contacts the network or the MCP/LLM channel, so the seed stays in your terminal. The new wallet is empty: fund the printed address with NIBI (for gas) and USDC (collateral) before trading, and **back up the mnemonic** — that output is the only copy.
+
+> **Security:** the config file stores your seed phrase or key in plaintext on disk — lock down its file permissions and treat it like any other key material. Writes default to a dry run (`confirm=false`); you must explicitly pass `confirm=true` to broadcast a transaction.
 
 ## Tools
 
@@ -191,7 +240,7 @@ Reusable analysis templates that surface like slash commands in MCP clients. Eac
 ## Units & conventions
 
 - **Micro-units**: amounts (`tvl`, `collateralAmount`, `oiLong`, etc.) are integers in micro-units. Divide by `10^decimals` — USDC and stNIBI both use **6 decimals**, so divide by 1,000,000.
-- **Addresses**: trader and depositor addresses are Nibiru bech32 (`nibi1...`).
+- **Addresses**: trader, depositor, and referrer filters accept either an EVM hex address (`0x...`) or a Nibiru bech32 address (`nibi1...`); the server converts `0x` to bech32 before querying. Vault filters also accept a vault's EVM share-token address (`sharesERC20`, `0x...`), resolved against the live vault list. Addresses in responses are bech32.
 - **Timestamps**: `block_ts` is RFC3339; `epochStart` is in the chain's native time encoding.
 - **Funding rate APR**: `feesPerHourLong * 24 * 365 * 100`.
 - **Market IDs** (mainnet): Sai lists 100+ markets. Crypto uses low IDs (0 = BTC, 1 = ETH, 16 = SOL); US-stock markets use IDs 1000+ (1000 = QQQ, 1001 = SPY, 1002 = NVDA, …). Collateral IDs: 1 = USDC, 2 = stNIBI. Each (market, collateral) pair is a distinct market — `sai_list_markets` enumerates them all.

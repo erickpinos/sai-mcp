@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { graphqlRequest, type Network } from "../client.js";
+import { normalizeTraderAddress } from "../chain.js";
 
 const NetworkSchema = z
   .enum(["mainnet", "testnet"])
@@ -11,7 +12,9 @@ export const getReferralsSchema = {
   referrer: z
     .string()
     .min(1)
-    .describe("Referrer bech32 address (nibi1...) whose referral program to inspect."),
+    .describe(
+      "Referrer address whose referral program to inspect: a Nibiru bech32 address (nibi1...) or an EVM hex address (0x...).",
+    ),
   range: z
     .enum(["1d", "7d", "30d", "all"])
     .default("all")
@@ -73,7 +76,7 @@ export async function getReferrals(args: {
   return graphqlRequest(
     query,
     {
-      referrer: args.referrer,
+      referrer: normalizeTraderAddress(args.referrer),
       range: args.range,
       tradesLimit: args.tradesLimit,
       claimsLimit: args.claimsLimit,
@@ -87,7 +90,9 @@ export const getReferralForTraderSchema = {
   trader: z
     .string()
     .min(1)
-    .describe("Trader bech32 address (nibi1...) to look up the redeemed referral for."),
+    .describe(
+      "Trader address to look up the redeemed referral for: a Nibiru bech32 address (nibi1...) or an EVM hex address (0x...).",
+    ),
 };
 
 export async function getReferralForTrader(args: {
@@ -108,5 +113,9 @@ export async function getReferralForTrader(args: {
       }
     }
   `;
-  return graphqlRequest(query, { trader: args.trader }, args.network);
+  return graphqlRequest(
+    query,
+    { trader: normalizeTraderAddress(args.trader) },
+    args.network,
+  );
 }

@@ -73,7 +73,7 @@ const SERVER_INSTRUCTIONS = `sai-mcp exposes the Sai.fun decentralized perpetual
 Conventions:
 - network: every tool takes an optional network ("mainnet" | "testnet"), default mainnet.
 - Micro-units: on-chain amounts (tvl, collateralAmount, oiLong, etc.) are integers in micro-units - divide by 10^decimals. USDC and stNIBI both use 6 decimals (divide by 1,000,000).
-- Addresses: traders/depositors are Nibiru bech32 (nibi1...). The signer also has a 0x EVM address.
+- Addresses: trader/depositor/referrer filters accept either a Nibiru bech32 address (nibi1...) or an EVM hex address (0x...) - the tools convert 0x to bech32 automatically. Vault filters also accept a vault's EVM share-token address (sharesERC20, 0x...), resolved against the live vault list. Returned addresses are bech32. The signer also has a 0x EVM address.
 - Timestamps: block_ts is RFC3339.
 - Funding-rate APR: feesPerHourLong * 24 * 365 * 100.
 - Market IDs (mainnet): crypto uses low IDs (0=BTC, 1=ETH, 16=SOL); US-stock markets use IDs 1000+ (1000=QQQ, 1001=SPY, 1002=NVDA). Collateral IDs: 1=USDC, 2=stNIBI. Each (market, collateral) pair is a distinct market - sai_list_markets enumerates them all.
