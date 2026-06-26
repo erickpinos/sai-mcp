@@ -74,7 +74,7 @@ const SERVER_INSTRUCTIONS = `sai-mcp exposes the Sai.fun decentralized perpetual
 
 Conventions:
 - network: every tool takes an optional network ("mainnet" | "testnet"), default mainnet.
-- Micro-units: on-chain amounts (tvl, collateralAmount, oiLong, etc.) are integers in micro-units - divide by 10^decimals. USDC and stNIBI both use 6 decimals (divide by 1,000,000).
+- Micro-units: on-chain amounts (tvl, collateralAmount, oiLong, etc.) are integers in micro-units - divide by 10^decimals. USDC and stNIBI both use 6 decimals (divide by 1,000,000). Dividing by 1e6 yields the amount in the COLLATERAL token, which is USD only when that token is ~$1 (USDC). For stNIBI-denominated amounts (the stNIBI LP vaults' tvl/availableAssets, OI on stNIBI-collateral markets) you must additionally multiply by the stNIBI oracle price (~$0.0023) to get USD - otherwise the dollar value is overstated ~440x. sai_list_vaults does this for you: each vault carries a \`human\` projection with tvlTokens, tvlUsd, and collateralPriceUsd.
 - Addresses: trader/depositor/referrer filters accept either a Nibiru bech32 address (nibi1...) or an EVM hex address (0x...) - the tools convert 0x to bech32 automatically. Vault filters also accept a vault's EVM share-token address (sharesERC20, 0x...), resolved against the live vault list. Returned addresses are bech32. The signer also has a 0x EVM address.
 - Timestamps: block_ts is RFC3339.
 - Funding-rate APR: feesPerHourLong * 24 * 365 * 100.
@@ -204,7 +204,7 @@ export function createServer(): McpServer {
 
   register(
     "sai_get_market",
-    "Get a single perpetual market's full info: price, 24h change, volume, open interest, funding rates, leverage caps, fees, price impact parameters, isOpen, and (for US-stock/commodity markets) the tradingSchedule with hours, timezone, and holidays.",
+    "Get a single perpetual market's full info: price, 24h price change, cumulative all-time USD volume (volumeUsd is NOT a 24h figure), open interest, funding rates, leverage caps, fees, price impact parameters, isOpen, and (for US-stock/commodity markets) the tradingSchedule with hours, timezone, and holidays. NOTE: raw oiLong/oiShort/oiMax are micro-units of the market's COLLATERAL token, not USD (/1e6 for tokens, then * collateral price for USD; stNIBI-collateral markets differ ~440x). A `human` projection carries oiLongUsd/oiShortUsd/oiMaxUsd and collateralPriceUsd already computed.",
     getMarketSchema,
     getMarket,
     { title: "Get market details" },
@@ -220,7 +220,7 @@ export function createServer(): McpServer {
 
   register(
     "sai_get_trader_history",
-    "List a trader's position events (position_opened, position_closed, liquidation, tpsl_updated, leverage updates, SL/TP triggered) with realized PnL, tx hashes (cosmos + evm), and block timestamps. This is the per-event audit log and the best way to confirm a write landed (match on the broadcast's evmTxHash). Like sai_get_trader_trades it reads indexed state, so a just-broadcast event usually appears within a few seconds (occasionally up to ~1-2 minutes under load).",
+    "List a trader's position events (position_opened, position_closed, liquidation, tpsl_updated, leverage updates, SL/TP triggered) with realized PnL, tx hashes (cosmos + evm), and block timestamps. This is the per-event audit log and the best way to confirm a write landed (match on the broadcast's evmTxHash). Like sai_get_trader_trades it reads indexed state, so a just-broadcast event usually appears within a few seconds (occasionally up to ~1-2 minutes under load). NOTE: raw realizedPnlCollateral is micro-units of the position's COLLATERAL token, not USD; each row carries a `human` projection with realizedPnl (collateral tokens), realizedPnlUsd, and realizedPnlPct already computed (stNIBI-collateral PnL differs ~440x from a naive /1e6 read).",
     getTraderHistorySchema,
     getTraderHistory,
     { title: "Get trader history" },
@@ -245,7 +245,7 @@ export function createServer(): McpServer {
   // LP / vaults
   register(
     "sai_list_vaults",
-    "List all Sai LP vaults (USDC, stNIBI) with TVL, share price, APY, fee APY, current epoch, and full revenue breakdown.",
+    "List all Sai LP vaults (USDC, stNIBI) with TVL, share price, APY, fee APY, current epoch, and full revenue breakdown. NOTE: raw tvl / availableAssets / revenueInfo.* are micro-units of the vault's COLLATERAL token, not USD (/1e6 for token units, then * collateral price for USD). For USDC vaults that USD value ~= the token amount; for stNIBI vaults it differs ~440x. Each vault carries a `human` projection with tvlTokens, tvlUsd, collateralPriceUsd, and availableAssetsUsd already computed.",
     listVaultsSchema,
     listVaults,
     { title: "List LP vaults" },
@@ -261,7 +261,7 @@ export function createServer(): McpServer {
 
   register(
     "sai_get_deposit_history",
-    "List vault deposit/withdrawal events with amounts, shares, action type, and tx hashes. Filter by depositor or vault.",
+    "List vault deposit/withdrawal events with amounts, shares, action type, and tx hashes. Filter by depositor or vault. NOTE: raw amount is micro-units of the vault's COLLATERAL token (not USD) and shares is share-token micro-units; each row carries a `human` projection with amountTokens, amountUsd, sharesTokens, and collateralPriceUsd already computed (stNIBI-vault amounts differ ~440x from a naive /1e6 read).",
     getDepositHistorySchema,
     getDepositHistory,
     { title: "Get vault deposit history" },

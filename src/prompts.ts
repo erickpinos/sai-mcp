@@ -105,7 +105,7 @@ Remember amounts are in micro-units (divide USDC/stNIBI fields by 1,000,000), an
             text: `Give an overview of Sai.fun perpetual markets on ${network}.
 
 1. Call sai_list_markets (network="${network}") to enumerate markets. Crypto markets use low IDs (0=BTC, 1=ETH, 16=SOL); US-stock markets use IDs 1000+ (1000=QQQ, 1001=SPY, 1002=NVDA). Note which are open (isOpen) and any tradingSchedule.
-2. For a handful of notable markets (e.g. BTC, ETH, SOL, plus any that look unusually active), call sai_get_market (with the marketId and collateralId=1 for USDC) to get price, 24h change, volume, open interest (oiLong/oiShort), and funding rates.
+2. For a handful of notable markets (e.g. BTC, ETH, SOL, plus any that look unusually active), call sai_get_market (with the marketId and collateralId=1 for USDC) to get price, 24h change, cumulative all-time volume (volumeUsd is all-time, not 24h), open interest (oiLong/oiShort), and funding rates.
 
 Then summarize:
 - Which markets are open vs closed right now (and, for closed stock markets, when they reopen).

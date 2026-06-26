@@ -11,45 +11,17 @@ An [MCP](https://modelcontextprotocol.io) server for the **[Sai.fun](https://sai
 - "How much fees has the Sai protocol collected this week?"
 - "Who's on top of the PnL leaderboard?"
 - "Plot BTC's last 24 hours of hourly candles"
-- "Did `0x1238…4323` get liquidated in the last 24 hours?"
-
-Trader, depositor, and referrer addresses accept either an EVM hex address (`0x...`) or a Nibiru bech32 address (`nibi1...`) interchangeably. The server converts `0x` to bech32 for you.
+- "Did `nibi123...6235` get liquidated in the last 24 hours?"
 
 ## Install
 
-### Option A: Run via `npx` (no install)
+`sai-mcp` is published on npm, and your MCP client launches it on demand. Setup is just adding one entry to your client's config, using a section below. Each entry points the client at `npx -y sai-mcp`, which fetches the package from npm the first time and runs it as a local server.
 
-```bash
-npx sai-mcp
-```
+If you want to hack on the server itself, see [Development](#development).
 
-### Option B: Clone and build locally
-
-```bash
-git clone https://github.com/erickpinos/sai-mcp.git
-cd sai-mcp
-npm install
-npm run build
-```
-
-This produces `dist/index.js`, which is the executable MCP server entrypoint.
-
-## Add to Claude Desktop
+### Add to Claude Desktop
 
 Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
-
-```json
-{
-  "mcpServers": {
-    "sai": {
-      "command": "node",
-      "args": ["/absolute/path/to/sai-mcp/dist/index.js"]
-    }
-  }
-}
-```
-
-Or with `npx`:
 
 ```json
 {
@@ -64,13 +36,15 @@ Or with `npx`:
 
 Restart Claude Desktop. The `sai` tools will appear in the tools menu.
 
-## Add to Claude Code
+### Add to Claude Code
 
 ```bash
-claude mcp add sai -- node /absolute/path/to/sai-mcp/dist/index.js
+claude mcp add sai -- npx -y sai-mcp
 ```
 
-## Add to Cursor
+Add `-s user` to make it available across all your projects instead of just the current one.
+
+### Add to Cursor
 
 In `~/.cursor/mcp.json`:
 
@@ -78,8 +52,8 @@ In `~/.cursor/mcp.json`:
 {
   "mcpServers": {
     "sai": {
-      "command": "node",
-      "args": ["/absolute/path/to/sai-mcp/dist/index.js"]
+      "command": "npx",
+      "args": ["-y", "sai-mcp"]
     }
   }
 }
@@ -325,34 +299,7 @@ claude mcp add --transport http sai http://127.0.0.1:3000/
 
 Sessions are stateful (the server issues an `Mcp-Session-Id` on initialize); the read-only tools and resources also work over HTTP with no signer and no token.
 
-### Signer setup
-
-Write tools (`sai_open_trade`, `sai_close_trade`, `sai_update_tpsl`, `sai_update_leverage`, `sai_get_wallet_info`) are disabled until you give the MCP server a wallet.
-
-**Recommended (local): a keystore.** Run once and the server auto-loads it; nothing to paste into a config:
-
-```bash
-npx sai-mcp keygen --save       # fresh wallet -> ~/.sai-mcp/wallet.json (mode 0600)
-```
-
-Already have a wallet? Write `~/.sai-mcp/wallet.json` yourself with `{ "mnemonic": "..." }` or `{ "privateKey": "0x..." }` and `chmod 600` it (see [Existing wallet](#existing-wallet)). There's no import command, so your seed never goes through a shell command or a chat.
-
-**Hosted / Docker / CI: an env-var signer.** Supply **one** (a set env var overrides the keystore):
-
-```bash
-SAI_MNEMONIC="word word word ..." npx sai-mcp
-# or
-SAI_PRIVATE_KEY="0x..." npx sai-mcp
-```
-
-Optional:
-
-```bash
-SAI_DERIVATION_PATH="m/44'/60'/0'/0/0"   # default; for mnemonic only
-SAI_KEYSTORE="~/.sai-mcp/wallet.json"    # default keystore path; consulted only when no env signer is set
-```
-
-#### Trade guard rails (operator-set caps)
+### Trade guard rails (operator-set caps)
 
 When the MCP server runs in an agent loop, set hard ceilings the agent cannot raise. Unset = no cap on that dimension; the underlying market constraints still apply.
 
@@ -363,45 +310,59 @@ SAI_MAX_POSITION_USD="1000"       # max notional (collateral × leverage)
 SAI_MARKET_ALLOWLIST="0,1,16"     # comma-separated marketIds (e.g. 0=BTC, 1=ETH, 16=SOL)
 ```
 
-Caps are enforced before any network call — including in dry-run mode — so an over-limit request returns an immediate error rather than a confusing simulation. The active caps are echoed back in `sai_open_trade`'s dry-run summary under `guards`, so the agent can see what's in effect.
+Caps are enforced before any network call (including in dry-run mode), so an over-limit request returns an immediate error rather than a confusing simulation. The active caps are echoed back in `sai_open_trade`'s dry-run summary under `guards`. Pass these env vars the same way as the signer: your client config's `env` field, or `-e` on `claude mcp add`.
 
-In a Claude Desktop / Cursor / Claude Code config, pass the env via the `env` field:
+## Development
+
+Only needed if you're hacking on the server itself. Normal users should install via `npx` (see [Install](#install)) and never touch the repo.
+
+### Clone and build
+
+```bash
+git clone https://github.com/erickpinos/sai-mcp.git
+cd sai-mcp
+npm install
+npm run build        # compile to dist/ (produces the dist/index.js entrypoint)
+```
+
+Useful scripts:
+
+```bash
+npm run dev          # tsc --watch — rebuild on change
+npm run inspect      # open MCP Inspector against the server
+```
+
+### Point your MCP client at the local build
+
+Swap the `npx` launch command for a direct `node` invocation of your compiled `dist/index.js`:
 
 ```json
 {
   "mcpServers": {
     "sai": {
-      "command": "npx",
-      "args": ["-y", "sai-mcp"],
-      "env": {
-        "SAI_MNEMONIC": "word word word ..."
-      }
+      "command": "node",
+      "args": ["/absolute/path/to/sai-mcp/dist/index.js"]
     }
   }
 }
 ```
 
-**Treat your keystore (or the env file containing your mnemonic) like any other private key.** The MCP server never exposes the seed via any tool; it only derives the address and signs locally. If you'd rather not give an LLM access to a hot wallet, configure no signer at all; read-only tools continue to work.
-
-## Develop
+For Claude Code:
 
 ```bash
-npm install
-npm run dev          # tsc --watch
-npm run inspect      # open MCP Inspector against the server
+claude mcp add sai -- node /absolute/path/to/sai-mcp/dist/index.js
 ```
 
 ### Testing the CLI locally
 
-To exercise the `sai-mcp` command against your local checkout (e.g. testing changes before publishing, rather than the published version `npx` would fetch), build it and symlink the bin:
+To exercise the `sai-mcp` command against your local checkout (testing changes before publishing, rather than the published version `npx` would fetch), symlink the bin:
 
 ```bash
-npm install
-npm run build        # compile to dist/ (or `npm run dev` to rebuild on change)
+npm run build        # or `npm run dev` to rebuild on change
 npm link             # `sai-mcp` now resolves to this checkout
 ```
 
-After that, `sai-mcp` (and `sai-mcp keygen`, etc.) run your working copy. `npm unlink -g sai-mcp` removes the symlink when you're done. Note that the MCP server itself doesn't need this — configs launch it directly via `node /absolute/path/to/dist/index.js`.
+After that, `sai-mcp` (and `sai-mcp keygen`, etc.) run your working copy. `npm unlink -g sai-mcp` removes the symlink when you're done. The MCP server itself doesn't need this; configs launch it directly via `node /absolute/path/to/dist/index.js`.
 
 ## License
 

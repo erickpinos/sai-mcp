@@ -6,3 +6,7 @@ dist/
 .env.local
 *.tsbuildinfo
 .claude
+.gstack/
+
+# Local-only manual verification scripts (not part of the published package).
+test/

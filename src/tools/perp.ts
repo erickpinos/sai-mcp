@@ -83,6 +83,7 @@ export async function getMarket(args: {
           priceChangePct24Hrs
           minPrice24Hrs
           maxPrice24Hrs
+          # Cumulative all-time USD volume for this market. NOT a 24h figure
           volumeUsd
           oiLong
           oiShort
@@ -113,13 +114,55 @@ export async function getMarket(args: {
           }
         }
       }
+      oracle {
+        tokenPricesUsd(limit: 500) {
+          token { symbol }
+          priceUsd
+        }
+      }
     }
   `;
-  return graphqlRequest(
+  const data = await graphqlRequest<{
+    perp: { borrowing: Record<string, any> | null } | null;
+    oracle: {
+      tokenPricesUsd: Array<{ token: { symbol: string }; priceUsd: number }>;
+    } | null;
+  }>(
     query,
     { collateralId: args.collateralId, marketId: args.marketId },
     args.network,
   );
+
+  // oiLong / oiShort / oiMax are micro-units of the COLLATERAL token, not USD.
+  // /1e6 yields collateral tokens; USD additionally needs the collateral price.
+  // For USDC (~$1) the price step is a ~no-op, but for stNIBI-collateral markets
+  // (~$0.0023) skipping it overstates USD ~440x. Attach a units-explicit `human`
+  // projection with the OI in USD, mirroring sai_list_vaults. Non-breaking: the
+  // raw oi* fields are preserved.
+  const b = data?.perp?.borrowing;
+  if (b) {
+    const symbol: string | null = b.collateralToken?.symbol ?? null;
+    const price = symbol
+      ? data?.oracle?.tokenPricesUsd?.find((p) => p.token?.symbol === symbol)
+          ?.priceUsd ?? null
+      : null;
+    const oiLongTokens = microsToUnits(b.oiLong);
+    const oiShortTokens = microsToUnits(b.oiShort);
+    const oiMaxTokens = microsToUnits(b.oiMax);
+    const usd = (t: number | null) =>
+      t !== null && price !== null ? t * price : null;
+    b.human = {
+      collateralToken: symbol,
+      collateralPriceUsd: price === null ? null : Number(price),
+      oiLongUsd: usd(oiLongTokens),
+      oiShortUsd: usd(oiShortTokens),
+      oiMaxUsd: usd(oiMaxTokens),
+      note: "oiLong / oiShort / oiMax are micro-units of the collateral token, NOT USD: divide by 1e6 for collateral tokens, then multiply by collateralPriceUsd for USD. For USDC markets that USD value ~= the token amount; for stNIBI markets it differs ~440x. (price / priceChangePct24Hrs / fee percents are already in their natural units.)",
+    };
+  }
+
+  // The oracle list was fetched only for the join; return the original shape.
+  return { perp: data.perp };
 }
 
 export const getTraderTradesSchema = {
@@ -281,7 +324,9 @@ export async function getTraderHistory(args: {
       }
     }
   `;
-  return graphqlRequest(
+  const data = await graphqlRequest<{
+    perp: { tradeHistory: Array<Record<string, any>> | null } | null;
+  }>(
     query,
     {
       where: { trader: normalizeTraderAddress(args.trader) },
@@ -290,6 +335,30 @@ export async function getTraderHistory(args: {
     },
     args.network,
   );
+
+  // realizedPnlCollateral is micro-units of the position's collateral token (NOT
+  // USD); realizedPnlPct is a raw ratio (0.0559 = 5.59%). Each row carries the
+  // historical `collateralPrice` (plain USD at the event), so project PnL to
+  // collateral tokens and on to USD. For stNIBI-collateral positions a verbatim
+  // /1e6 read overstates the dollar PnL ~440x. openingFeeUsd / closingFeeUsd are
+  // already USD. Non-breaking: raw fields preserved. realizedPnlCollateral is
+  // null on position_opened rows -> human.realizedPnl stays null.
+  for (const h of data?.perp?.tradeHistory ?? []) {
+    const cp = Number(h.collateralPrice);
+    const price = Number.isFinite(cp) && cp > 0 ? cp : null;
+    const pnlTokens = microsToUnits(h.realizedPnlCollateral);
+    h.human = {
+      collateralToken: h.trade?.perpBorrowing?.collateralToken?.symbol ?? null,
+      collateralPriceUsd: price,
+      realizedPnl: pnlTokens,
+      realizedPnlUsd:
+        pnlTokens !== null && price !== null ? pnlTokens * price : null,
+      realizedPnlPct: ratioToPctString(h.realizedPnlPct),
+      note: "realizedPnl is in collateral-token units (raw realizedPnlCollateral is micro-units, /1e6); realizedPnlUsd = realizedPnl * collateralPriceUsd (the historical price at the event). realizedPnlPct is the raw ratio rendered as a percent. openingFeeUsd / closingFeeUsd are already USD.",
+    };
+  }
+
+  return data;
 }
 
 export const getUserPortfolioSchema = {

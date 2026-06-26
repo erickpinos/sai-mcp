@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { graphqlRequest, type Network } from "../client.js";
 import { normalizeTraderAddress, normalizeEvmAddress } from "../chain.js";
+import { microsToUnits } from "../format.js";
 
 const NetworkSchema = z
   .enum(["mainnet", "testnet"])
@@ -80,6 +81,8 @@ export const listVaultsSchema = {
 };
 
 export async function listVaults(args: { network: Network }) {
+  // Fetch the vaults and the oracle prices in a single round-trip so each
+  // vault's collateral-denominated amounts can be projected to USD below.
   const query = `
     {
       lp {
@@ -110,9 +113,55 @@ export async function listVaults(args: { network: Network }) {
         epochDurationDays
         epochDurationHours
       }
+      oracle {
+        tokenPricesUsd(limit: 500) {
+          token { symbol }
+          priceUsd
+        }
+      }
     }
   `;
-  return graphqlRequest(query, {}, args.network);
+  const data = await graphqlRequest<{
+    lp: { vaults: Array<Record<string, any>> | null } | null;
+    oracle: {
+      tokenPricesUsd: Array<{ token: { symbol: string }; priceUsd: number }>;
+    } | null;
+  }>(query, {}, args.network);
+
+  // Bug: a vault's `tvl` and `availableAssets` are NOT USD - they are the
+  // collateral token in micro-units (6 decimals). For a USDC vault that is also
+  // ~USD (USDC ~= $1), but for the stNIBI vaults a verbatim read overstates the
+  // dollar value by ~440x (stNIBI ~= $0.0023). Reaching USD requires
+  // `/1e6 * collateralPriceUsd`. So attach a units-explicit `human` projection
+  // (token amount + USD) next to the raw fields, matching the pattern the perp
+  // and oracle tools use. Non-breaking: the raw fields are preserved.
+  const priceBySymbol = new Map<string, number>();
+  for (const p of data?.oracle?.tokenPricesUsd ?? []) {
+    if (p.token?.symbol) priceBySymbol.set(p.token.symbol, Number(p.priceUsd));
+  }
+
+  for (const v of data?.lp?.vaults ?? []) {
+    const symbol: string | null = v.collateralToken?.symbol ?? null;
+    const price = symbol ? priceBySymbol.get(symbol) ?? null : null;
+    const tvlTokens = microsToUnits(v.tvl);
+    const availableTokens = microsToUnits(v.availableAssets);
+    v.human = {
+      collateralToken: symbol,
+      collateralPriceUsd: price,
+      tvlTokens,
+      tvlUsd: tvlTokens !== null && price !== null ? tvlTokens * price : null,
+      availableAssetsTokens: availableTokens,
+      availableAssetsUsd:
+        availableTokens !== null && price !== null
+          ? availableTokens * price
+          : null,
+      note: "Vault amounts are denominated in the collateral token, NOT USD. Raw tvl / availableAssets (and the revenueInfo.* fields) are micro-units of collateralToken: divide by 1e6 for token units, then multiply by collateralPriceUsd for USD. For USDC vaults that USD value ~= the token amount; for stNIBI vaults it differs ~440x.",
+    };
+  }
+
+  // The oracle prices were fetched only to build the per-vault USD projection;
+  // drop them so the response keeps its original `{ lp: ... }` shape.
+  return { lp: data.lp };
 }
 
 export const getVaultStatsSchema = {
@@ -197,11 +246,31 @@ export async function getDepositHistory(args: {
       }
     }
   `;
-  return graphqlRequest(
-    query,
-    { where, limit: args.limit, offset: args.offset },
-    args.network,
-  );
+  const data = await graphqlRequest<{
+    lp: { depositHistory: Array<Record<string, any>> | null } | null;
+  }>(query, { where, limit: args.limit, offset: args.offset }, args.network);
+
+  // `amount` is micro-units of the vault's collateral token (NOT USD) and
+  // `shares` is micro-units of the vault share token. Each row carries the
+  // historical `collateralPrice` (plain USD at event time), so project both to
+  // human units and `amount` on to USD. collateralPrice can be 0 on early rows
+  // where it was not recorded - treat that as unknown (null USD), not $0.
+  for (const d of data?.lp?.depositHistory ?? []) {
+    const cp = Number(d.collateralPrice);
+    const price = Number.isFinite(cp) && cp > 0 ? cp : null;
+    const amountTokens = microsToUnits(d.amount);
+    d.human = {
+      collateralToken: d.vault?.collateralToken?.symbol ?? null,
+      collateralPriceUsd: price,
+      amountTokens,
+      amountUsd:
+        amountTokens !== null && price !== null ? amountTokens * price : null,
+      sharesTokens: microsToUnits(d.shares),
+      note: "amount is collateral-token micro-units (/1e6 for tokens, then * collateralPriceUsd for USD); shares are vault share-token micro-units (/1e6). collateralPriceUsd is the historical price at event time; null when the keeper did not record it.",
+    };
+  }
+
+  return data;
 }
 
 export const getWithdrawRequestsSchema = {
