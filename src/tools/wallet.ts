@@ -30,11 +30,18 @@ export async function getWalletInfo(args: { network: Network }) {
   ]);
 
   // EVM native balance is in 18-decimal wei, even though the underlying bank
-  // denom (`unibi`) is 6-decimal — the EVM exposes it scaled up.
+  // denom (`unibi`) is 6-decimal, but the EVM exposes it scaled up. evmNative and
+  // bankUnibi are therefore two reads of the SAME on-chain NIBI balance (EVM RPC
+  // vs cosmos LCD) and should match. They can briefly diverge when one endpoint
+  // lags a block; we surface that explicitly rather than letting it read as a bug.
   const nibiEvmHuman = ethers.formatUnits(nibiEvmRaw, 18);
   const nibiBankHuman = ethers.formatUnits(nibiBankRaw, NIBI_DECIMALS);
   const usdcErc20Human = ethers.formatUnits(usdcErc20Raw, USDC_DECIMALS);
   const usdcBankHuman = ethers.formatUnits(usdcBankRaw, USDC_DECIMALS);
+
+  // Flag a divergence beyond rounding dust between the two NIBI sources.
+  const nibiDivergent =
+    Math.abs(Number(nibiEvmHuman) - Number(nibiBankHuman)) > 1e-6;
 
   return {
     network: args.network,
@@ -45,6 +52,11 @@ export async function getWalletInfo(args: { network: Network }) {
       nibi: {
         evmNative: nibiEvmHuman,
         bankUnibi: nibiBankHuman,
+        ...(nibiDivergent
+          ? {
+              note: "evmNative (EVM RPC) and bankUnibi (cosmos LCD) are two reads of the SAME NIBI balance and normally match; they differ here because one endpoint is momentarily lagging a block; re-query to reconcile. NIBI is not required to trade (Sai perp gas is sponsored).",
+            }
+          : {}),
       },
       usdc: {
         erc20: usdcErc20Human,

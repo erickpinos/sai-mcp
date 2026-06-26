@@ -82,7 +82,7 @@ Conventions:
 - Trading schedules: crypto trades 24/7 (tradingSchedule is null). US-stock/commodity markets carry a tradingSchedule and isOpen reflects whether they are currently tradeable; sai_open_trade rejects a closed market.
 
 Reads are eventually-consistent:
-- Read tools query a live indexer delayed behind the chain by a few seconds to ~1-2 minutes, and are NOT read-your-writes. Immediately after a write, sai_get_trader_trades may still show stale (pre-write) state. Confirm a write landed via the broadcast tx receipt (status: success) and/or the matching sai_get_trader_history event (match on evmTxHash), not sai_get_trader_trades.
+- Read tools query a live indexer that is usually within a few seconds of the chain (occasionally up to ~1-2 minutes behind under load), and are NOT read-your-writes. Immediately after a write, sai_get_trader_trades may still show stale (pre-write) state. Confirm a write landed via the broadcast tx receipt (status: success) and/or the matching sai_get_trader_history event (match on evmTxHash), not sai_get_trader_trades.
 
 Write tools (sai_open_trade, sai_close_trade, sai_update_tpsl, sai_update_leverage, sai_send):
 - Require a signer (inert otherwise). Default: ASK the user whether to create a NEW wallet, then run \`sai-mcp keygen --save\` (safe in-session; writes a 0600 keystore the server auto-loads, no restart, prints no secret). A user with an EXISTING wallet adds it by editing the keystore JSON themselves (see "Onboarding a signer"). Hosted/Docker setups can instead set SAI_MNEMONIC or SAI_PRIVATE_KEY in the server environment.
@@ -212,7 +212,7 @@ export function createServer(): McpServer {
 
   register(
     "sai_get_trader_trades",
-    "List a trader's open and closed perpetual positions with live PnL, leverage, liquidation price, tp/sl, and accumulated fees. NOTE: this reads the keeper's indexed state, which is delayed behind the chain by a few seconds to ~1-2 minutes. It is NOT read-your-writes: immediately after a sai_open_trade / sai_update_tpsl / sai_update_leverage / sai_close_trade broadcast, this may still show the pre-update values (stale leverage, tp/sl, or open/closed state). To confirm a write took effect, trust the broadcast's tx receipt (status: success) and/or the matching sai_get_trader_history event; only treat this query as authoritative once the indexer has caught up.",
+    "List a trader's open and closed perpetual positions with live PnL, leverage, liquidation price, tp/sl, and accumulated fees. NOTE: this reads the keeper's indexed state, which is usually within a few seconds of the chain (occasionally up to ~1-2 minutes behind under load). It is NOT read-your-writes: immediately after a sai_open_trade / sai_update_tpsl / sai_update_leverage / sai_close_trade broadcast, this may still show the pre-update values (stale leverage, tp/sl, or open/closed state). To confirm a write took effect, trust the broadcast's tx receipt (status: success) and/or the matching sai_get_trader_history event; only treat this query as authoritative once the indexer has caught up.",
     getTraderTradesSchema,
     getTraderTrades,
     { title: "Get trader positions" },
@@ -220,7 +220,7 @@ export function createServer(): McpServer {
 
   register(
     "sai_get_trader_history",
-    "List a trader's position events (position_opened, position_closed, liquidation, tpsl_updated, leverage updates, SL/TP triggered) with realized PnL, tx hashes (cosmos + evm), and block timestamps. This is the per-event audit log and the best way to confirm a write landed (match on the broadcast's evmTxHash). Like sai_get_trader_trades it reads indexed state, so a just-broadcast event may take a few seconds to ~1-2 minutes to appear.",
+    "List a trader's position events (position_opened, position_closed, liquidation, tpsl_updated, leverage updates, SL/TP triggered) with realized PnL, tx hashes (cosmos + evm), and block timestamps. This is the per-event audit log and the best way to confirm a write landed (match on the broadcast's evmTxHash). Like sai_get_trader_trades it reads indexed state, so a just-broadcast event usually appears within a few seconds (occasionally up to ~1-2 minutes under load).",
     getTraderHistorySchema,
     getTraderHistory,
     { title: "Get trader history" },

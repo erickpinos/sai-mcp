@@ -79,7 +79,7 @@ Then produce a concise report:
 - Activity and fees: volume, trade count, fee tier, and whether they are at risk of dropping a tier.
 - Risk flags: over-leverage, positions near liquidation, recent liquidations.
 
-Remember amounts are in micro-units (divide USDC/stNIBI fields by 1,000,000), and the indexer can lag the chain by up to ~1-2 minutes.`,
+Remember amounts are in micro-units (divide USDC/stNIBI fields by 1,000,000), and the indexer is eventually consistent (usually within a few seconds of the chain, occasionally up to ~1-2 minutes behind).`,
           },
         },
       ],

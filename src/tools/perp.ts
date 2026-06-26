@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { graphqlRequest, type Network } from "../client.js";
 import { normalizeTraderAddress } from "../chain.js";
+import { microsToUnits, ratioToPctString } from "../format.js";
 
 const NetworkSchema = z
   .enum(["mainnet", "testnet"])
@@ -216,6 +217,29 @@ export async function getTraderTrades(args: {
       (t) => t.perpBorrowing?.marketId === args.marketId,
     );
     data.perp.trades = filtered.slice(args.offset, args.offset + args.limit);
+  }
+
+  // Bug #3: the keeper's per-trade `state` mixes unit conventions under
+  // similarly-named fields: *Collateral fields are micro-units of the
+  // collateral token (divide by 1e6), while *Pct fields are RAW RATIOS, not
+  // percents (-0.011 means -1.1%). Reading them verbatim invites a
+  // 6-orders-of-magnitude misread, so attach a units-explicit `human`
+  // projection next to (not replacing) the raw fields. Non-breaking: raw fields
+  // are preserved for any client already depending on them.
+  for (const t of (data?.perp?.trades ?? []) as Array<Record<string, any>>) {
+    const s = t.state;
+    if (!s) continue;
+    s.human = {
+      collateralToken: t.perpBorrowing?.collateralToken?.symbol ?? null,
+      pnl: microsToUnits(s.pnlCollateral),
+      pnlAfterFees: microsToUnits(s.pnlCollateralAfterFees),
+      pnlPct: ratioToPctString(s.pnlPct),
+      positionValue: microsToUnits(s.positionValue),
+      borrowingFee: microsToUnits(s.borrowingFeeCollateral),
+      closingFee: microsToUnits(s.closingFeeCollateral),
+      remainingCollateralAfterFees: microsToUnits(s.remainingCollateralAfterFees),
+      note: "Amounts are in collateralToken units (the raw state.*Collateral fields are micro-units, /1e6); pnlPct is the raw state.pnlPct ratio rendered as a percent.",
+    };
   }
   return data;
 }

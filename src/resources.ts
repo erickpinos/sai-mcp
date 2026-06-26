@@ -46,8 +46,9 @@ Chain as MCP tools (live data from the sai-keeper indexer).
 
 ## Reads are eventually-consistent
 
-Read tools query a live indexer delayed behind the chain by a few seconds to
-~1-2 minutes, and are NOT read-your-writes. Immediately after a write,
+Read tools query a live indexer that is usually within a few seconds of the
+chain (occasionally up to ~1-2 minutes behind under load), and are NOT
+read-your-writes. Immediately after a write,
 \`sai_get_trader_trades\` may still show stale (pre-write) state. Confirm a write
 landed via the broadcast tx receipt (status: success) and/or the matching
 \`sai_get_trader_history\` event (match on \`evmTxHash\`), not

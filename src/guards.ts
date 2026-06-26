@@ -57,6 +57,28 @@ export type TradeRequest = {
   leverage: number;
 };
 
+// Render the guards block for a tool summary. An all-null block (the previous
+// behaviour) reads to a caller like "no safety configured" / a bug on a mainnet
+// money tool. Instead, when no operator caps are set, return a self-explanatory
+// object; when caps ARE set, return only the dimensions actually in effect.
+export function summarizeGuards(
+  guards: TradeGuards = loadTradeGuards(),
+): Record<string, unknown> {
+  const active: Record<string, unknown> = {};
+  if (guards.maxTradeUsdc !== null) active.maxTradeUsdc = guards.maxTradeUsdc;
+  if (guards.maxLeverage !== null) active.maxLeverage = guards.maxLeverage;
+  if (guards.maxPositionUsd !== null) active.maxPositionUsd = guards.maxPositionUsd;
+  if (guards.marketAllowlist)
+    active.marketAllowlist = [...guards.marketAllowlist].sort((a, b) => a - b);
+  if (Object.keys(active).length === 0) {
+    return {
+      configured: false,
+      note: "No operator caps set on this MCP server; the chain's own market limits (leverage range, wallet balance, market open/closed) still apply.",
+    };
+  }
+  return { configured: true, ...active };
+}
+
 export function assertTradeAllowed(req: TradeRequest, guards: TradeGuards = loadTradeGuards()): void {
   if (guards.marketAllowlist && !guards.marketAllowlist.has(req.marketId)) {
     const allowed = [...guards.marketAllowlist].sort((a, b) => a - b).join(", ");

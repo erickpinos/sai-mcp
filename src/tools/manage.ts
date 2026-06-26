@@ -8,8 +8,8 @@ import {
   USDC_DECIMALS,
 } from "../chain.js";
 import { graphqlRequest, type Network } from "../client.js";
-import { toPlainDecimalString } from "../format.js";
-import { loadTradeGuards } from "../guards.js";
+import { microsToUnits, ratioToPctString, toPlainDecimalString } from "../format.js";
+import { loadTradeGuards, summarizeGuards } from "../guards.js";
 
 const NetworkSchema = z
   .enum(["mainnet", "testnet"])
@@ -57,25 +57,40 @@ async function fetchTrade(
   id: number,
   trader: string,
 ): Promise<ManagedTrade> {
-  const data = await graphqlRequest<{ perp: { trade: ManagedTrade | null } }>(
-    `query Trade($id: Int!, $trader: String!) {
-      perp {
-        trade(id: $id, trader: $trader) {
-          id isOpen isLong leverage collateralAmount openPrice tp sl tradeType
-          openBlock { block block_ts }
-          perpBorrowing {
-            marketId isOpen
-            baseToken { symbol name }
-            quoteToken { symbol name }
-            collateralToken { id symbol }
+  let data: { perp: { trade: ManagedTrade | null } };
+  try {
+    data = await graphqlRequest<{ perp: { trade: ManagedTrade | null } }>(
+      `query Trade($id: Int!, $trader: String!) {
+        perp {
+          trade(id: $id, trader: $trader) {
+            id isOpen isLong leverage collateralAmount openPrice tp sl tradeType
+            openBlock { block block_ts }
+            perpBorrowing {
+              marketId isOpen
+              baseToken { symbol name }
+              quoteToken { symbol name }
+              collateralToken { id symbol }
+            }
+            state { liquidationPrice pnlCollateral pnlPct }
           }
-          state { liquidationPrice pnlCollateral pnlPct }
         }
-      }
-    }`,
-    { id, trader },
-    network,
-  );
+      }`,
+      { id, trader },
+      network,
+    );
+  } catch (e) {
+    // The keeper signals an unknown trade index by RAISING a GraphQL error
+    // ("perp trade not found") rather than returning trade: null, so it surfaces
+    // here as graphqlRequest throwing, before the null-check below ever runs.
+    // Translate that into the same clean, actionable message.
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/trade not found/i.test(msg)) {
+      throw new Error(
+        `No trade with index ${id} found for this wallet. List your open positions and their ids with sai_get_trader_trades.`,
+      );
+    }
+    throw e;
+  }
   const trade = data.perp?.trade;
   if (!trade) {
     throw new Error(
@@ -178,7 +193,7 @@ function recentOpenAdvisory(
 // Hint appended to a broadcast-revert error, tailored by how fresh the position is.
 function revertRetryHint(ageSec: number | null): string {
   return ageSec !== null && ageSec < RECENT_OPEN_SECONDS
-    ? `The position was opened ~${ageSec}s ago; actions within ~1-2 min of opening commonly revert here even after a clean gas estimate. Wait ~1-2 minutes and retry.`
+    ? `The position was opened ~${ageSec}s ago; actions within ~1-2 min of opening can occasionally revert here even after a clean gas estimate (a rare transient settlement-timing condition, not a guaranteed failure). If it reverts, wait ~1-2 minutes and retry.`
     : "If you just opened or modified this position its state may still be settling; wait a moment and retry. It may also already be closed/settled.";
 }
 
@@ -280,7 +295,7 @@ function interpretSimulationError(
     "On-chain simulation reverted without a decodable reason (common for this contract's precompile path).";
   const cause =
     action === "close-position" || action === "cancel-order"
-      ? " The most likely cause is that this trade is already closed/settled or no longer exists. Note the keeper's open/closed state is eventually-consistent and can be delayed behind the chain by up to ~1-2 minutes; confirm the trade's true state via sai_get_trader_history (look for a position_closed event) rather than sai_get_trader_trades."
+      ? " The most likely cause is that this trade is already closed/settled or no longer exists. Note the keeper's open/closed state is eventually-consistent (usually within seconds, occasionally up to ~1-2 minutes behind the chain); confirm the trade's true state via sai_get_trader_history (look for a position_closed event) rather than sai_get_trader_trades."
       : " The most likely cause is that this trade is no longer open, or a parameter is out of range for the position's current state. Confirm the trade's true state via sai_get_trader_history.";
   return base + cause;
 }
@@ -343,8 +358,12 @@ export async function closeTrade(args: {
       direction: trade.isLong ? "long" : "short",
       leverage: trade.leverage,
       tradeType: trade.tradeType,
+      // Raw keeper fields: pnlCollateral is micro-units of collateral, pnlPct is
+      // a raw ratio. The *Human fields make the units explicit (see format.ts).
       pnlCollateral: trade.state?.pnlCollateral ?? null,
       pnlPct: trade.state?.pnlPct ?? null,
+      pnlCollateralHuman: microsToUnits(trade.state?.pnlCollateral),
+      pnlPctDisplay: ratioToPctString(trade.state?.pnlPct),
     },
     wallet: { evmAddress, bech32Address, nonce: sim.nonce, chainId: sim.chainId },
     gas: gasSummary(sim),
@@ -664,7 +683,7 @@ export async function updateLeverage(args: {
       nonce: sim.nonce,
       chainId: sim.chainId,
     },
-    guards: { maxLeverage: guards.maxLeverage },
+    guards: summarizeGuards(guards),
     gas: gasSummary(sim),
   };
 

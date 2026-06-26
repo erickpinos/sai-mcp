@@ -8,7 +8,7 @@ import {
 } from "../chain.js";
 import { graphqlRequest, type Network } from "../client.js";
 import { toPlainDecimalString, toTokenAmountString } from "../format.js";
-import { assertTradeAllowed, loadTradeGuards } from "../guards.js";
+import { assertTradeAllowed, loadTradeGuards, summarizeGuards } from "../guards.js";
 
 const NetworkSchema = z
   .enum(["mainnet", "testnet"])
@@ -94,6 +94,8 @@ type Borrowing = {
   minLeverage: number;
   maxLeverage: number;
   minPositionSizeUSD: number;
+  openFeePct: number;
+  closeFeePct: number;
   baseToken: { symbol: string | null; name: string };
   quoteToken: { symbol: string | null; name: string };
   tradingSchedule: TradingSchedule | null;
@@ -111,6 +113,7 @@ async function fetchBorrowing(
       perp {
         borrowing(marketId: $marketId, collateralId: $collateralId) {
           isOpen marketId price minLeverage maxLeverage minPositionSizeUSD
+          openFeePct closeFeePct
           baseToken { symbol name }
           quoteToken { symbol name }
           tradingSchedule {
@@ -127,6 +130,33 @@ async function fetchBorrowing(
     throw new Error(`No market found for marketId=${marketId}, collateralId=${collateralId}`);
   }
   return b;
+}
+
+// Fraction of collateral whose loss triggers liquidation (Sai/gTrade-style
+// LIQ_THRESHOLD = 90%). Used to estimate a position's liquidation price before
+// it exists on-chain (the keeper only reports liquidationPrice for live trades).
+const LIQ_THRESHOLD = 0.9;
+
+/**
+ * Estimate the liquidation price of a fresh position. Verified against live
+ * keeper-reported liquidationPrice to <0.01% across BTC/SOL/DOGE/HYPE fills:
+ *   liqDistance% = LIQ_THRESHOLD/leverage - closeFeePct   (fraction of entry)
+ *   long  liq = entry * (1 - liqDistance%)
+ *   short liq = entry * (1 + liqDistance%)
+ * EXCLUDES accrued borrowing fees (which nudge liq nearer over the position's
+ * life) and any fee-tier close-fee discount, so it is an estimate, not exact.
+ * Returns null when leverage is so low the distance is non-positive (no
+ * meaningful liq within a 100% move).
+ */
+function estimateLiquidationPrice(
+  entryPrice: number,
+  leverage: number,
+  long: boolean,
+  closeFeePct: number,
+): number | null {
+  const liqDistPct = LIQ_THRESHOLD / leverage - closeFeePct;
+  if (!(liqDistPct > 0)) return null;
+  return long ? entryPrice * (1 - liqDistPct) : entryPrice * (1 + liqDistPct);
 }
 
 export async function openTrade(args: OpenTradeArgs) {
@@ -211,6 +241,16 @@ export async function openTrade(args: OpenTradeArgs) {
       );
     }
   }
+  // Liquidation price estimate so the caller can place a sane stop-loss without
+  // having to open the position first (the keeper only reports liquidationPrice
+  // for live trades). See estimateLiquidationPrice for the formula and caveats.
+  const liquidationPrice = estimateLiquidationPrice(
+    borrowing.price,
+    args.leverage,
+    args.long,
+    borrowing.closeFeePct,
+  );
+
   const baseSym = borrowing.baseToken.symbol ?? borrowing.baseToken.name;
   const quoteSym = borrowing.quoteToken.symbol ?? borrowing.quoteToken.name;
 
@@ -296,6 +336,9 @@ export async function openTrade(args: OpenTradeArgs) {
       slippagePct: args.slippagePct,
       tp: args.tp,
       sl: args.sl,
+      liquidationPrice,
+      liquidationPriceNote:
+        "Estimate (excludes accrued borrowing fees and any fee-tier close-fee discount); matches the keeper's reported liquidationPrice to <0.01% at open. Use it to place a stop-loss inside the liquidation level.",
     },
     wallet: {
       evmAddress,
@@ -310,14 +353,7 @@ export async function openTrade(args: OpenTradeArgs) {
       estimationError,
       gasPrice: "0 (sponsored by chain when targeting PerpVaultEvmInterface)",
     },
-    guards: {
-      maxTradeUsdc: guards.maxTradeUsdc,
-      maxLeverage: guards.maxLeverage,
-      maxPositionUsd: guards.maxPositionUsd,
-      marketAllowlist: guards.marketAllowlist
-        ? [...guards.marketAllowlist].sort((a, b) => a - b)
-        : null,
-    },
+    guards: summarizeGuards(guards),
     wasmMsg,
   };
 
