@@ -54,11 +54,15 @@ export const openTradeOutputSchema = {
   market: z
     .any()
     .optional()
-    .describe("Resolved market: marketId, symbol, currentPrice, leverageRange, minPositionSizeUSD."),
+    .describe(
+      "Resolved market: marketId, symbol, currentPrice, leverageRange ([minLeverage, maxLeverage]; minLeverage is 1 on major markets), and minPositionSizeUSD. NOTE: minPositionSizeUSD is ADVISORY ONLY and NOT enforced on-chain — the indexer reports the same flat value for every market and the chain accepts far smaller positions.",
+    ),
   trade: z
     .any()
     .optional()
-    .describe("direction, leverage, collateralUsdc, positionSizeUsd, slippagePct, tp, sl."),
+    .describe(
+      "direction, leverage, collateralUsdc, positionSizeUsd, slippagePct, tp, sl. May include belowReportedMinPositionSize (bool) and minPositionSizeNote (string): when the notional is under the reported min, the note explains it is not enforced — do NOT raise leverage to clear it.",
+    ),
   wallet: z.any().optional().describe("evmAddress, bech32Address, usdcBalance, nonce, chainId."),
   gas: z.any().optional().describe("estimate, limit, estimationError, gasPrice (sponsored)."),
   guards: z.any().optional().describe("Operator-set caps in effect."),

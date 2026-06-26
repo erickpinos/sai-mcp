@@ -161,14 +161,25 @@ export async function openTrade(args: OpenTradeArgs) {
     );
   }
   // The GraphQL `minPositionSizeUSD` does NOT reflect the on-chain enforced
-  // minimum (live positions exist well below it, e.g. ~$0.02 notional), so a
-  // hard client-side reject here would block trades the chain actually accepts.
-  // The on-chain `estimateGas` simulation below is authoritative: a genuinely
-  // too-small position surfaces as a non-null `gas.estimationError`. We surface
-  // the reported minimum as an advisory in the summary instead of throwing.
+  // minimum (live positions exist well below it, e.g. ~$0.02 notional; the
+  // indexer also reports the same flat value for every market, the signature of
+  // a placeholder), so a hard client-side reject here would block trades the
+  // chain actually accepts. The on-chain `estimateGas` simulation below is
+  // authoritative: a genuinely too-small position surfaces as a non-null
+  // `gas.estimationError`. We surface the reported minimum as an advisory in the
+  // summary instead of throwing.
   const positionSizeUSD = args.amountUsdc * args.leverage;
   const belowReportedMinPositionSize =
     positionSizeUSD < borrowing.minPositionSizeUSD;
+  // When the position is below the reported min, the model has historically
+  // mistaken `minPositionSizeUSD` for a hard floor and inflated leverage to
+  // "clear" it (e.g. forcing 12x on 0.1 USDC to reach $1.20). Surface the
+  // correction inline so the model does not change the trade to satisfy a number
+  // that is not enforced. `minLeverage` is 1 on the major markets, so the right
+  // way to size a small position is low leverage, not high.
+  const minPositionSizeNote = belowReportedMinPositionSize
+    ? `positionSizeUsd ($${positionSizeUSD}) is below the indexer's reported minPositionSizeUSD ($${borrowing.minPositionSizeUSD}), but this is ADVISORY ONLY and is NOT enforced on-chain — the chain accepts positions far smaller (sub-$1, ~$0.02 observed) and this market's minLeverage is ${borrowing.minLeverage}. Do NOT raise leverage to exceed this number; size the position as the user asked. The authoritative check is the dry-run gas estimate: if the position were genuinely too small, gas.estimationError would be set.`
+    : undefined;
   if (args.slippagePct > 50) {
     throw new Error(
       `slippagePct=${args.slippagePct} is unreasonably high (max 50). Set a realistic tolerance, typically 0.1–5.`,
@@ -281,6 +292,7 @@ export async function openTrade(args: OpenTradeArgs) {
       collateralUsdc: args.amountUsdc,
       positionSizeUsd: positionSizeUSD,
       belowReportedMinPositionSize,
+      ...(minPositionSizeNote ? { minPositionSizeNote } : {}),
       slippagePct: args.slippagePct,
       tp: args.tp,
       sl: args.sl,
