@@ -1,6 +1,6 @@
 {
   "name": "sai-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server for the Sai.fun perpetual futures protocol on Nibiru Chain. Exposes the sai-keeper GraphQL API as MCP tools.",
   "type": "module",
   "bin": {
